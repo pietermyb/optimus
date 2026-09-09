@@ -1425,20 +1425,535 @@ git commit -m "docs: record Cursor hook probe findings"
 
 | Unknown 1 verdict | Next |
 |---|---|
-| row 1 — distinguishing field | Task 5, then 7, 8, 9. **Skip Task 6.** |
-| row 3 — subagent calls do not fire `preToolUse` | Task 5, then 7, 8, 9. Skip Task 6. `isSubagentPayload()` returns `false` always, and that is correct: if the hook never fires for a subagent, every payload it does see is the orchestrator's. Record that reasoning in the adapter's header comment. |
-| row 2 — no distinguishing field | Task 5 first, then Task 6, then 7, 8, 9. Task 6 patches and re-tests the file Task 5 creates, so it cannot precede it. |
-| row 4 — enforcement unreliable under subagents | **Stop.** Hard enforcement is not viable on Cursor. Do Task 7 (rules only), Task 8 (installing rules + `sessionStart` only), Task 9 — and state plainly in the README that the Cursor build is advisory, not enforced. Do not ship a gate that only sometimes blocks. |
+| **row 2 — no distinguishing field (THIS IS WHAT HAPPENED — see `docs/cursor-probe-findings.md`)** | Task 5 (sidecar), then Task 6 (adapter), then 7, 8, 9. Both tasks were rewritten after the probe: `conversation_id` turned out to be the discriminator, so the sidecar gives exact per-call attribution rather than the coarse fallback the spec anticipated. |
+| row 1 — distinguishing field | Would have collapsed Task 5 into a payload field check inside Task 6. Not what happened. |
+| row 3 — subagent calls do not fire `preToolUse` | Ruled out empirically: they do fire. |
+
+| row 4 — enforcement unreliable under subagents | Ruled out empirically: an unconditional deny hook blocked both the orchestrator's and the subagent's calls for real. |
 
 ---
 
-## Task 5: The Cursor `preToolUse` adapter
+## Task 5: The Cursor subagent sidecar
+
+> **Revised after the Task 4 probe run.** The probe landed on decision-matrix row 2 — a Cursor
+> `preToolUse` payload carries no field that marks it as a subagent's — but it also established
+> that `conversation_id` is the discriminator: a subagent's tool calls carry the subagent's own
+> `conversation_id`, and `subagentStart` carries the parent's as `parent_conversation_id` and fires
+> before the subagent's first tool call. That is the spec's own preferred row-2 mechanism
+> ("keyed by `conversation_id` … if `subagentStart`'s `parent_conversation_id` matches the
+> `preToolUse` payload's `conversation_id`"), so the sidecar gives **exact per-call attribution**,
+> not the coarse "any subagent is outstanding" approximation the spec fell back to. See
+> `docs/cursor-probe-findings.md`.
+
+**Files:**
+- Create: `hooks/optimus-sidecar.js`
+- Create: `hooks/optimus-subagent-cursor.js`
+- Create: `tests/run-sidecar-tests.sh`
+
+**Interfaces:**
+- Consumes: `findProjectRoot`, `getConfig`, `isKillSwitchActive` from `hooks/optimus-config.js`.
+- Produces, from `hooks/optimus-sidecar.js`:
+  - `markActive(cwd, subagentId, parentConversationId) -> void`
+  - `clearActive(cwd, subagentId) -> void`
+  - `parentConversations(cwd) -> Set<string>`
+  - `isSubagentConversation(cwd, conversationId) -> boolean`
+  - `SIDECAR_DIRNAME` (string), `STALE_MS` (number)
+- Produces, as an executable: `hooks/optimus-subagent-cursor.js`, registered on Cursor's
+  `subagentStart` and `subagentStop` in Task 7's `cursor/hooks.json`.
+
+**Design, and why each part is the way it is:**
+
+- **One marker FILE per subagent, filename = the subagent's id, content = the PARENT's
+  `conversation_id`.** Never one shared JSON document: a shared document needs read-modify-write,
+  reopening exactly the concurrency race `hooks/optimus-ledger.js`'s append-only design avoids.
+  Two writers never touch the same path here, so parallel subagents are safe by construction.
+- **Keyed on the subagent id, valued by the parent id.** The probe established that
+  `subagentStart.subagent_id` is NOT the subagent's own `conversation_id` — it is the parent's
+  `tool_use_id` for the `Task` call (identical to `tool_call_id`). The subagent's own conversation
+  id is not knowable until its first tool call, so it cannot be pre-registered. The id is used
+  only as a unique filename so `subagentStop` can clear the right entry; the parent id is the
+  payload.
+- **The gate's test is `conversation_id ∉ parentConversations()`.** With at least one subagent
+  outstanding, a call whose conversation is a recorded parent is the orchestrator's, and any other
+  conversation is a subagent's. With no subagent outstanding there are no subagent calls either,
+  so an empty set means "everything is the orchestrator".
+- **A `subagentStop` with no matching `subagentStart` must be tolerated.** The probe observed
+  exactly that: a dispatch that fails validation fires `subagentStop` (`subagent_type: "unknown"`,
+  `status: "error"`) with no preceding `subagentStart`. `clearActive` on an unknown id is a no-op.
+- **Stale markers expire.** A missed `subagentStop` (crash, force-quit, window reload mid-dispatch)
+  would otherwise leave a parent recorded forever, and every OTHER conversation in the project
+  would be treated as a subagent. `parentConversations` ignores markers older than `STALE_MS`
+  (30 minutes) and unlinks them as it finds them.
+
+**Two known limitations, to be documented in Task 9 and not hidden:**
+
+1. **Two orchestrators in one project.** If two Cursor windows drive the same project and window A
+   has a subagent outstanding, window B's own tool calls have a conversation id that is not a
+   recorded parent, so they are exempted. Fail-open, consistent with Optimus's stated stance, and
+   strictly narrower than the coarse design the spec anticipated. Closing it would need a write on
+   the enforcement hot path to register orchestrator conversations, which costs more than the hole.
+2. **Nested subagents are not handled.** If a subagent were itself to dispatch one, that subagent's
+   conversation would become a recorded parent and its own calls would start being blocked —
+   fail-closed, the bad direction. Nesting was not observed on Cursor 3.19.13 (`subagent_type` is
+   a fixed built-in enum) and is out of scope. If it turns out to be real, the fix is a
+   known-children marker set alongside the parents.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/run-sidecar-tests.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Lifecycle tests for the Cursor subagent sidecar.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+PROJECT="$WORKDIR/project"
+mkdir -p "$PROJECT"
+CLAUDE_PROJECT_DIR="$PROJECT" node "$ROOT/bin/optimus-cli" on >/dev/null
+
+echo "== Optimus sidecar tests =="
+node - "$ROOT" "$PROJECT" <<'NODE'
+const path = require('path');
+const fs = require('fs');
+const assert = require('assert');
+const [root, project] = process.argv.slice(2);
+const s = require(path.join(root, 'hooks', 'optimus-sidecar.js'));
+const dir = path.join(project, '.optimus', 'state', s.SIDECAR_DIRNAME);
+
+let pass = 0, fail = 0;
+function t(name, fn) {
+  try { fn(); console.log('PASS: ' + name); pass++; }
+  catch (e) { console.log('FAIL: ' + name + ' -- ' + e.message); fail++; }
+}
+
+t('no parents on a fresh project', () => {
+  assert.strictEqual(s.parentConversations(project).size, 0);
+});
+t('with no parents recorded, nothing is a subagent', () => {
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-main'), false);
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-anything'), false);
+});
+t('markActive records the parent conversation, not the subagent id', () => {
+  s.markActive(project, 'tooluse-1', 'conv-main');
+  assert.deepStrictEqual([...s.parentConversations(project)], ['conv-main']);
+});
+t('the parent conversation is NOT a subagent', () => {
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-main'), false);
+});
+t('any other conversation IS a subagent while one is outstanding', () => {
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-sub'), true);
+});
+t('a missing conversation id is treated as the orchestrator, not a subagent', () => {
+  assert.strictEqual(s.isSubagentConversation(project, undefined), false);
+  assert.strictEqual(s.isSubagentConversation(project, ''), false);
+});
+t('parallel subagents from one parent collapse to one parent entry', () => {
+  s.markActive(project, 'tooluse-2', 'conv-main');
+  assert.strictEqual(fs.readdirSync(dir).length, 2);
+  assert.deepStrictEqual([...s.parentConversations(project)], ['conv-main']);
+});
+t('clearing one of two leaves the parent recorded', () => {
+  s.clearActive(project, 'tooluse-1');
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-sub'), true);
+});
+t('clearing the last one empties the parent set', () => {
+  s.clearActive(project, 'tooluse-2');
+  assert.strictEqual(s.parentConversations(project).size, 0);
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-sub'), false);
+});
+t('a subagentStop with no matching start is a no-op, not a throw', () => {
+  s.clearActive(project, 'never-started');
+  assert.strictEqual(s.parentConversations(project).size, 0);
+});
+t('two parents can be outstanding at once', () => {
+  s.markActive(project, 'tooluse-3', 'conv-main');
+  s.markActive(project, 'tooluse-4', 'conv-other');
+  assert.deepStrictEqual([...s.parentConversations(project)].sort(), ['conv-main', 'conv-other']);
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-main'), false);
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-other'), false);
+  assert.strictEqual(s.isSubagentConversation(project, 'conv-sub'), true);
+  s.clearActive(project, 'tooluse-3');
+  s.clearActive(project, 'tooluse-4');
+});
+t('an id with path separators cannot escape the sidecar dir', () => {
+  s.markActive(project, '../../escaped', 'conv-main');
+  assert.strictEqual(fs.existsSync(path.join(project, '.optimus', 'escaped')), false);
+  s.clearActive(project, '../../escaped');
+  assert.strictEqual(s.parentConversations(project).size, 0);
+});
+t('a stale marker is ignored and swept', () => {
+  s.markActive(project, 'stale-1', 'conv-main');
+  const f = path.join(dir, 'stale-1');
+  const old = new Date(Date.now() - s.STALE_MS - 60000);
+  fs.utimesSync(f, old, old);
+  assert.strictEqual(s.parentConversations(project).size, 0);
+  assert.strictEqual(fs.existsSync(f), false);
+});
+t('a marker with no readable parent id is ignored', () => {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'empty-1'), '');
+  assert.strictEqual(s.parentConversations(project).size, 0);
+  fs.unlinkSync(path.join(dir, 'empty-1'));
+});
+t('a non-Optimus directory yields no parents, not a throw', () => {
+  assert.strictEqual(s.parentConversations('/tmp').size, 0);
+  assert.strictEqual(s.isSubagentConversation('/tmp', 'conv-sub'), false);
+});
+
+console.log('');
+console.log('== ' + pass + ' passed, ' + fail + ' failed ==');
+process.exit(fail === 0 ? 0 : 1);
+NODE
+
+echo ""
+echo "-- the subagentStart/subagentStop hook drives the same sidecar --"
+HOOK="$ROOT/hooks/optimus-subagent-cursor.js"
+DIR="$PROJECT/.optimus/state/active-subagents"
+pass=0
+fail=0
+
+start_payload() {
+  printf '{"hook_event_name":"subagentStart","conversation_id":"conv-sub","parent_conversation_id":"conv-main","subagent_id":"tooluse-9","tool_call_id":"tooluse-9","cwd":"%s"}' "$PROJECT"
+}
+stop_payload() {
+  printf '{"hook_event_name":"subagentStop","conversation_id":"conv-sub","parent_conversation_id":"conv-main","subagent_id":"tooluse-9","cwd":"%s"}' "$PROJECT"
+}
+
+out="$(start_payload | node "$HOOK")"
+if echo "$out" | grep -q '"permission":"allow"'; then
+  echo "PASS: subagentStart emits allow"; pass=$((pass+1))
+else
+  echo "FAIL: subagentStart did not emit allow -- $out"; fail=$((fail+1))
+fi
+if [ "$(cat "$DIR/tooluse-9" 2>/dev/null)" == "conv-main" ]; then
+  echo "PASS: subagentStart recorded the parent conversation"; pass=$((pass+1))
+else
+  echo "FAIL: marker missing or wrong -- $(ls -1 "$DIR" 2>/dev/null)"; fail=$((fail+1))
+fi
+stop_payload | node "$HOOK" >/dev/null
+if [ ! -e "$DIR/tooluse-9" ]; then
+  echo "PASS: subagentStop cleared the marker"; pass=$((pass+1))
+else
+  echo "FAIL: subagentStop left the marker behind"; fail=$((fail+1))
+fi
+
+echo ""
+echo "-- an orphan subagentStop is harmless --"
+if printf '{"hook_event_name":"subagentStop","subagent_id":"orphan-1","subagent_type":"unknown","status":"error","cwd":"%s"}' "$PROJECT" | node "$HOOK" | grep -q '"permission":"allow"'; then
+  echo "PASS: orphan subagentStop allows"; pass=$((pass+1))
+else
+  echo "FAIL: orphan subagentStop misbehaved"; fail=$((fail+1))
+fi
+
+echo ""
+echo "-- inactive project and kill switch write nothing --"
+CLAUDE_PROJECT_DIR="$PROJECT" node "$ROOT/bin/optimus-cli" off >/dev/null
+start_payload | node "$HOOK" >/dev/null
+if [ ! -e "$DIR/tooluse-9" ]; then
+  echo "PASS: inactive project writes no marker"; pass=$((pass+1))
+else
+  echo "FAIL: wrote a marker while inactive"; fail=$((fail+1))
+fi
+CLAUDE_PROJECT_DIR="$PROJECT" node "$ROOT/bin/optimus-cli" on >/dev/null
+start_payload | OPTIMUS_DISABLED=1 node "$HOOK" >/dev/null
+if [ ! -e "$DIR/tooluse-9" ]; then
+  echo "PASS: kill switch writes no marker"; pass=$((pass+1))
+else
+  echo "FAIL: wrote a marker with the kill switch on"; fail=$((fail+1))
+fi
+
+echo ""
+echo "-- malformed stdin is harmless --"
+if echo 'not json' | node "$HOOK" | grep -q '"permission":"allow"'; then
+  echo "PASS: malformed payload allows"; pass=$((pass+1))
+else
+  echo "FAIL: malformed payload misbehaved"; fail=$((fail+1))
+fi
+
+echo ""
+echo "== hook: $pass passed, $fail failed =="
+[ "$fail" -eq 0 ]
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+```bash
+chmod +x tests/run-sidecar-tests.sh
+./tests/run-sidecar-tests.sh
+```
+
+Expected: FAIL — `Cannot find module '.../hooks/optimus-sidecar.js'`.
+
+- [ ] **Step 3: Write `hooks/optimus-sidecar.js`**
+
+```js
+'use strict';
+
+/**
+ * Subagent attribution for the Cursor build.
+ *
+ * Cursor's preToolUse payload carries no field marking a call as a
+ * subagent's (spec Section 5.1 decision-matrix row 2, confirmed
+ * empirically in docs/cursor-probe-findings.md). What it does carry is
+ * conversation_id, and the probe established that a subagent's tool
+ * calls carry the SUBAGENT's own conversation_id while subagentStart
+ * carries the parent's as parent_conversation_id — and fires before the
+ * subagent's first tool call.
+ *
+ * So: record the parent's conversation id for the lifetime of each
+ * dispatch, and the gate's question becomes "is this call's conversation
+ * one of the recorded parents?" A recorded parent is the orchestrator;
+ * anything else, while a dispatch is outstanding, is a subagent. That is
+ * exact per-call attribution with no race against parallel subagents,
+ * because every payload carries its own originating conversation.
+ *
+ * One marker FILE per outstanding subagent — filename is the subagent's
+ * id, contents are the parent's conversation id. Never one shared JSON
+ * document: that would need read-modify-write, reopening exactly the
+ * concurrency race hooks/optimus-ledger.js's append-only design avoids.
+ * Two writers never touch the same path here.
+ *
+ * The filename is only a unique key so subagentStop can clear the right
+ * entry. It is deliberately NOT treated as the subagent's conversation
+ * id: the probe showed subagentStart.subagent_id is the parent's
+ * tool_use_id for the Task call, and the subagent's own conversation id
+ * is not knowable until its first tool call.
+ *
+ * Never throws. parentConversations() sits on the gate's hot path.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { findProjectRoot } = require(path.join(__dirname, 'optimus-config.js'));
+
+const SIDECAR_DIRNAME = 'active-subagents';
+/** A marker older than this is treated as abandoned (missed subagentStop). */
+const STALE_MS = 30 * 60 * 1000;
+/** Defensive cap on the parent id written into a marker. */
+const MAX_ID_LEN = 200;
+
+/** Reduces an id to a single safe path segment. Never returns ''. */
+function safeId(id) {
+  const cleaned = String(id == null ? '' : id).replace(/[^\w.-]/g, '_').slice(0, 128);
+  return cleaned === '' || cleaned === '.' || cleaned === '..' ? 'unknown' : cleaned;
+}
+
+function sidecarDir(cwd) {
+  const root = findProjectRoot(cwd);
+  if (!root) return null;
+  return path.join(root, '.optimus', 'state', SIDECAR_DIRNAME);
+}
+
+/**
+ * Record that a subagent identified by `subagentId` is outstanding, and
+ * that the conversation which dispatched it is `parentConversationId`.
+ */
+function markActive(cwd, subagentId, parentConversationId) {
+  try {
+    const dir = sidecarDir(cwd);
+    if (!dir) return;
+    const parent = String(parentConversationId == null ? '' : parentConversationId)
+      .trim()
+      .slice(0, MAX_ID_LEN);
+    if (parent === '') return; // without a parent id the marker carries no signal
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, safeId(subagentId)), parent, { mode: 0o600 });
+  } catch (e) {
+    // Best effort. A failure here means the subagent's calls are treated
+    // as the orchestrator's and get enforced — the safe direction to fail
+    // on a host where the caller cannot otherwise be identified.
+  }
+}
+
+function clearActive(cwd, subagentId) {
+  try {
+    const dir = sidecarDir(cwd);
+    if (!dir) return;
+    fs.unlinkSync(path.join(dir, safeId(subagentId)));
+  } catch (e) {
+    // Already gone, or never written. The probe observed a real case: a
+    // dispatch that fails validation fires subagentStop with no preceding
+    // subagentStart.
+  }
+}
+
+/**
+ * The set of conversation ids that currently have at least one subagent
+ * outstanding. Stale markers are unlinked as they are found, so a missed
+ * subagentStop cannot keep a parent recorded indefinitely.
+ */
+function parentConversations(cwd) {
+  const parents = new Set();
+  try {
+    const dir = sidecarDir(cwd);
+    if (!dir) return parents;
+    const cutoff = Date.now() - STALE_MS;
+    for (const name of fs.readdirSync(dir)) {
+      const file = path.join(dir, name);
+      try {
+        if (fs.statSync(file).mtimeMs < cutoff) {
+          fs.unlinkSync(file);
+          continue;
+        }
+        const parent = fs.readFileSync(file, 'utf8').trim();
+        if (parent !== '') parents.add(parent);
+      } catch (e) {
+        // vanished mid-scan, or unreadable — carries no signal
+      }
+    }
+  } catch (e) {
+    // no sidecar dir, unreadable, or not an Optimus project
+  }
+  return parents;
+}
+
+/**
+ * True if `conversationId` belongs to a dispatched subagent rather than
+ * the orchestrator.
+ *
+ * With no dispatch outstanding there are no subagent calls either, so an
+ * empty parent set means "everything is the orchestrator". A payload with
+ * no conversation id is treated as the orchestrator's — enforcing on an
+ * unidentifiable call is the safer direction than exempting it, and every
+ * payload the probe observed carried one.
+ */
+function isSubagentConversation(cwd, conversationId) {
+  if (typeof conversationId !== 'string' || conversationId.trim() === '') return false;
+  const parents = parentConversations(cwd);
+  if (parents.size === 0) return false;
+  return !parents.has(conversationId);
+}
+
+module.exports = {
+  markActive,
+  clearActive,
+  parentConversations,
+  isSubagentConversation,
+  SIDECAR_DIRNAME,
+  STALE_MS,
+};
+```
+
+- [ ] **Step 4: Write `hooks/optimus-subagent-cursor.js`**
+
+```js
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * Cursor subagentStart / subagentStop adapter.
+ *
+ * Maintains the sidecar the Cursor gate consults to tell a subagent's own
+ * tool calls apart from the orchestrator's (see hooks/optimus-sidecar.js
+ * and docs/cursor-probe-findings.md). One executable serves both events;
+ * it branches on hook_event_name.
+ *
+ * Enforces nothing. Always emits an explicit allow and exits 0 — on
+ * Cursor, "no output" is not defined as allow the way it is on Claude
+ * Code, and exit code 2 means deny.
+ */
+
+const path = require('path');
+const { isKillSwitchActive, getConfig } = require(
+  path.join(__dirname, 'optimus-config.js')
+);
+const { markActive, clearActive } = require(path.join(__dirname, 'optimus-sidecar.js'));
+
+function done() {
+  process.stdout.write(JSON.stringify({ permission: 'allow' }));
+  process.exit(0);
+}
+
+function main(raw) {
+  if (isKillSwitchActive()) return done();
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (e) {
+    return done();
+  }
+  if (!payload || typeof payload !== 'object') return done();
+
+  let cfg;
+  try {
+    cfg = getConfig(payload.cwd);
+  } catch (e) {
+    return done();
+  }
+  if (!cfg.enabled) return done();
+
+  // subagent_id is the parent's tool_use_id for the Task call, and equals
+  // tool_call_id. Either serves as the unique marker key; fall back
+  // through them so a renamed field degrades to a still-unique key rather
+  // than to no marker at all.
+  const id = payload.subagent_id || payload.tool_call_id || payload.generation_id;
+
+  if (payload.hook_event_name === 'subagentStart') {
+    markActive(payload.cwd, id, payload.parent_conversation_id);
+  } else if (payload.hook_event_name === 'subagentStop') {
+    clearActive(payload.cwd, id);
+  }
+  return done();
+}
+
+let raw = '';
+process.stdin.on('data', (d) => {
+  raw += d;
+});
+process.stdin.on('end', () => {
+  try {
+    main(raw);
+  } catch (e) {
+    try {
+      process.stdout.write(JSON.stringify({ permission: 'allow' }));
+    } catch (e2) {
+      // nothing left to do
+    }
+    process.exit(0);
+  }
+});
+```
+
+- [ ] **Step 5: Run the sidecar suite, then everything**
+
+```bash
+./tests/run-sidecar-tests.sh
+./tests/run-core-tests.sh && ./tests/run-gate-tests.sh && ./tests/run-ledger-tests.sh \
+  && ./tests/run-stats-tests.sh && ./tests/run-probe-report-tests.sh
+```
+
+Expected: `0 failed` everywhere. Nothing consumes the sidecar yet — Task 6's adapter does.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add hooks/optimus-sidecar.js hooks/optimus-subagent-cursor.js tests/run-sidecar-tests.sh
+git commit -m "feat: add Cursor subagent sidecar keyed on parent conversation id"
+```
+
+---
+
+## Task 6: The Cursor `preToolUse` adapter
+
+> **Revised after the Task 4 probe run.** Every tool name, `tool_input` key and payload field below
+> is what Cursor 3.19.13 actually sent, recorded in `docs/cursor-probe-findings.md` — not a
+> documented guess. Four probe results changed this task from its pre-probe form: `isSubagent` now
+> comes from Task 5's sidecar rather than a payload field; `tool_input` keys are Cursor's real ones
+> (`file_path`, not `path`); `Task`'s `tool_input.model` exists and can hold the string `inherit`,
+> which must be rejected; and `model_id`/`model_params` are absent from `preToolUse` entirely.
 
 **Files:**
 - Create: `hooks/optimus-gate-cursor.js`
 - Create: `tests/fixtures/cursor/main-read.json`
 - Create: `tests/fixtures/cursor/subagent-read.json`
+- Create: `tests/fixtures/cursor/subagent-start.json`
+- Create: `tests/fixtures/cursor/subagent-stop.json`
 - Create: `tests/fixtures/cursor/task-no-model.json`
+- Create: `tests/fixtures/cursor/task-inherit-model.json`
 - Create: `tests/fixtures/cursor/task-opus-model.json`
 - Create: `tests/fixtures/cursor/task-cheap-model.json`
 - Create: `tests/fixtures/cursor/main-shell-git.json`
@@ -1447,44 +1962,124 @@ git commit -m "docs: record Cursor hook probe findings"
 - Create: `tests/run-gate-cursor-tests.sh`
 
 **Interfaces:**
-- Consumes: `decide`, `ledgerEventFor`, `AGENT_DISPATCH`, `SHELL`, `REASON` from `hooks/optimus-core.js`; `isKillSwitchActive`, `getConfig` from `hooks/optimus-config.js`; `recordEvent` from `hooks/optimus-ledger.js`; the verdict and tool-name table from `docs/cursor-probe-findings.md`.
-- Produces: an executable hook at `hooks/optimus-gate-cursor.js`, referenced by `cursor/hooks.json` in Task 7.
+- Consumes: `decide`, `ledgerEventFor`, `AGENT_DISPATCH`, `SHELL`, `REASON` from
+  `hooks/optimus-core.js`; `isKillSwitchActive`, `getConfig` from `hooks/optimus-config.js`;
+  `recordEvent` from `hooks/optimus-ledger.js`; `isSubagentConversation` from
+  `hooks/optimus-sidecar.js` (Task 5).
+- Produces: an executable hook at `hooks/optimus-gate-cursor.js`, registered on `preToolUse` by
+  Task 7's `cursor/hooks.json`.
 
-**Fixture values must come from the probe log, not from this plan.** The fixtures below carry the field set from the spec's documented list; every *value* — especially `tool_name` strings and any subagent-identity field — must be replaced with what `probe.log` actually recorded in Task 4. A fixture that encodes a guess turns the adapter suite into a test of the guess.
+**Probe facts this task is built on** (all from `docs/cursor-probe-findings.md`):
+
+| Fact | Consequence here |
+|---|---|
+| `Read`→`{file_path}`, `Write`→`{file_path, content}`, `Grep`→`{pattern, file_path, output_mode}`, `WebFetch`→`{url}`, `WebSearch`→`{search_term}`, `Delete`→`{file_path}`, `Shell`→`{command, cwd, timeout}`, `Task`→`{description, prompt, subagent_type, model}` | The tool map and the input normalizer below |
+| No distinct `Edit` tool — a partial edit is a `Read` then a `Write` of the whole file | `Edit` stays in the map as inert future-proofing, with a comment saying it was not observed |
+| No distinct glob tool — globbing is `Grep` with `pattern: ""` and `glob` set | `Glob` likewise inert; `Grep` already covers it |
+| No notebook tool — `.ipynb` edits are `Read`+`Write` | `NotebookEdit` likewise inert |
+| `Task`'s `tool_input.model` held the literal string `"inherit"` | **Must be rejected.** `inherit` means the subagent runs on the orchestrator's own expensive model — exactly what the no-model rule exists to prevent, and `/opus/i` does not match it |
+| The *top-level* `model` on a `Task` payload was `""` | The dispatch model must come from `tool_input.model`, never the payload's `model` |
+| `model_id` and `model_params` were absent from every `preToolUse` payload; `model` was the plain slug | `sessionModel` falls back from `model_id` to `model`; `modelConditional` must tolerate `model_id` being missing |
+| `session_id` is present and equals `conversation_id` on every payload | Either can feed the ledger's `session_id`; use `conversation_id` as specified, since it is the field the spec names |
+| `transcript_path` is `null` on a subagent's payload, a real path on the orchestrator's | Recorded in the fixtures for fidelity. Deliberately NOT used as a role signal: `null` also means "transcripts disabled", so trusting it would silently disable all enforcement for a user who turns transcripts off |
+| Denying `Read` also blocks writes to existing files (Cursor issues an internal `Read` first) | No action: Optimus denies `Read` and `Write` together anyway. Documented in Task 9 |
+| `WebSearch`/`WebFetch` emit follow-up `Write` calls to `~/.cursor/projects/<ws>/agent-tools/*.txt` | No action, and no path exemption: `WebFetch`/`WebSearch` are themselves denied in the orchestrator, so no cache write follows; inside a subagent the fetch and its cache write share the subagent's conversation and are both exempt. Documented in Task 9 |
+
+**Fixtures carry no `user_email`.** Cursor sends one on every payload; the adapter never reads it
+and the ledger must not start recording it without a deliberate decision, so it is left out of the
+fixtures rather than baking a real address into the repository.
 
 - [ ] **Step 1: Write the fixtures**
 
-`tests/fixtures/cursor/main-read.json` (the others follow the same shape — `cwd` is the literal `__PROJECT__` token, substituted by the harness, exactly as the Claude Code fixtures do):
+`tests/fixtures/cursor/main-read.json` — `cwd` and `workspace_roots` use the literal
+`__PROJECT__` token, substituted by the harness, exactly as the Claude Code fixtures do:
 
 ```json
 {
   "hook_event_name": "preToolUse",
-  "conversation_id": "probe-conv-1",
+  "conversation_id": "probe-conv-main",
+  "session_id": "probe-conv-main",
   "generation_id": "probe-gen-1",
-  "model": "Claude Opus 5",
-  "model_id": "claude-opus-5",
-  "cursor_version": "REPLACE_FROM_PROBE",
+  "model": "claude-opus-5",
+  "cursor_version": "3.19.13",
   "workspace_roots": ["__PROJECT__"],
   "transcript_path": "/tmp/does-not-exist.jsonl",
   "cwd": "__PROJECT__",
   "tool_name": "Read",
-  "tool_input": { "path": "work.txt" },
-  "tool_use_id": "cursor_fixture_1",
+  "tool_input": { "file_path": "work.txt" },
+  "tool_use_id": "toolu_bdrk_probe_main_1",
   "agent_message": "Reading work.txt"
 }
 ```
 
-The remaining fixtures, each a copy of the above with these deltas:
+`tests/fixtures/cursor/subagent-read.json` — the subagent's own conversation, and
+`transcript_path: null` as observed:
 
-| Fixture | Deltas |
-|---|---|
-| `subagent-read.json` | plus whatever subagent-identity field Task 4 found, e.g. `"subagent_id": "sub-1"`; `tool_use_id: "cursor_fixture_2"` |
-| `task-no-model.json` | `tool_name: "Task"`, `tool_input: {"description":"read work.txt","prompt":"read work.txt","subagent_type":"general-purpose"}` |
-| `task-opus-model.json` | `tool_name: "Task"`, `tool_input: {"model":"claude-opus-5","subagent_type":"general-purpose"}` |
-| `task-cheap-model.json` | `tool_name: "Task"`, `tool_input: {"model":"claude-haiku-4-5","subagent_type":"general-purpose"}` |
-| `main-shell-git.json` | `tool_name: "Shell"`, `tool_input: {"command":"git status"}` |
-| `main-shell-cat.json` | `tool_name: "Shell"`, `tool_input: {"command":"cat work.txt"}` |
-| `main-delete.json` | `tool_name: "Delete"`, `tool_input: {"path":"work.txt"}` |
+```json
+{
+  "hook_event_name": "preToolUse",
+  "conversation_id": "probe-conv-sub",
+  "session_id": "probe-conv-sub",
+  "generation_id": "probe-gen-2",
+  "model": "cursor-grok-4.5-high",
+  "cursor_version": "3.19.13",
+  "workspace_roots": ["__PROJECT__"],
+  "transcript_path": null,
+  "cwd": "__PROJECT__",
+  "tool_name": "Read",
+  "tool_input": { "file_path": "work.txt" },
+  "tool_use_id": "call-probe-sub-1",
+  "agent_message": "Reading work.txt"
+}
+```
+
+`tests/fixtures/cursor/subagent-start.json`:
+
+```json
+{
+  "hook_event_name": "subagentStart",
+  "conversation_id": "probe-conv-sub",
+  "parent_conversation_id": "probe-conv-main",
+  "subagent_id": "toolu_bdrk_probe_task_1",
+  "tool_call_id": "toolu_bdrk_probe_task_1",
+  "subagent_type": "explore",
+  "cursor_version": "3.19.13",
+  "cwd": "__PROJECT__"
+}
+```
+
+`tests/fixtures/cursor/subagent-stop.json`:
+
+```json
+{
+  "hook_event_name": "subagentStop",
+  "conversation_id": "probe-conv-sub",
+  "parent_conversation_id": "probe-conv-main",
+  "subagent_id": "toolu_bdrk_probe_task_1",
+  "subagent_type": "explore",
+  "status": "completed",
+  "cursor_version": "3.19.13",
+  "cwd": "__PROJECT__"
+}
+```
+
+The remaining seven are copies of `main-read.json` with these deltas and a distinct `tool_use_id`:
+
+| Fixture | `tool_name` | `tool_input` |
+|---|---|---|
+| `task-no-model.json` | `Task` | `{"description":"read work.txt","prompt":"read work.txt","subagent_type":"explore"}` |
+| `task-inherit-model.json` | `Task` | `{"description":"read work.txt","prompt":"read work.txt","subagent_type":"explore","model":"inherit"}` |
+| `task-opus-model.json` | `Task` | `{"description":"read work.txt","prompt":"read work.txt","subagent_type":"explore","model":"claude-opus-5"}` |
+| `task-cheap-model.json` | `Task` | `{"description":"read work.txt","prompt":"read work.txt","subagent_type":"explore","model":"claude-haiku-4-5"}` |
+| `main-shell-git.json` | `Shell` | `{"command":"git status","cwd":"__PROJECT__","timeout":120000}` |
+| `main-shell-cat.json` | `Shell` | `{"command":"cat work.txt","cwd":"__PROJECT__","timeout":120000}` |
+| `main-delete.json` | `Delete` | `{"file_path":"work.txt"}` |
+
+Note the `Task` fixtures keep the top-level `"model": "claude-opus-5"` from `main-read.json`
+deliberately: the probe showed the top-level `model` on a real `Task` payload was `""`, and either
+way it must not be what the dispatch check reads. `task-cheap-model.json` passing while the
+top-level model is `claude-opus-5` is the assertion that proves the check reads
+`tool_input.model`.
 
 Create `tests/run-gate-cursor-tests.sh`:
 
@@ -1493,15 +2088,16 @@ Create `tests/run-gate-cursor-tests.sh`:
 # Shape tests for hooks/optimus-gate-cursor.js.
 #
 # Deliberately shallow: the policy these payloads exercise already has
-# direct coverage in tests/core-tests.js. These exist only to catch
-# parsing and shape-translation bugs at the Cursor boundary — a wrong
-# tool-name mapping, a malformed permission JSON, a subagent field read
-# from the wrong key.
+# direct coverage in tests/core-tests.js, and the sidecar has its own
+# suite. These exist to catch parsing and shape-translation bugs at the
+# Cursor boundary — a wrong tool-name mapping, a wrong tool_input key, a
+# malformed permission JSON, a role decision read from the wrong place.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURES="$ROOT/tests/fixtures/cursor"
 GATE="$ROOT/hooks/optimus-gate-cursor.js"
+SUBHOOK="$ROOT/hooks/optimus-subagent-cursor.js"
 CLI="$ROOT/bin/optimus-cli"
 
 WORKDIR="$(mktemp -d)"
@@ -1512,11 +2108,12 @@ mkdir -p "$PROJECT"
 pass=0
 fail=0
 
+render() { sed "s#__PROJECT__#$PROJECT#g" "$FIXTURES/$1"; }
+
 check() {
-  local name="$1" expect="$2" fixture="$3" cwd="$4" extra_env="${5:-}"
-  local payload out decision
-  payload="$(sed "s#__PROJECT__#$cwd#g" "$FIXTURES/$fixture")"
-  out="$(env $extra_env node "$GATE" <<<"$payload")"
+  local name="$1" expect="$2" fixture="$3" extra_env="${4:-}"
+  local out decision
+  out="$(render "$fixture" | env $extra_env node "$GATE")"
   decision="unparseable"
   if echo "$out" | grep -q '"permission":"deny"'; then
     decision="deny"
@@ -1533,28 +2130,37 @@ check() {
 }
 
 echo "== Optimus Cursor gate tests =="
-echo "-- inactive project: everything allows (and emits explicit allow JSON) --"
-check "inactive: main Read allowed"      allow main-read.json     "$PROJECT"
-check "inactive: Task no-model allowed"  allow task-no-model.json "$PROJECT"
+echo "-- inactive project: everything allows, with explicit allow JSON --"
+check "inactive: main Read allowed"     allow main-read.json
+check "inactive: Task no-model allowed" allow task-no-model.json
 
 echo ""
 echo "-- activating Optimus for $PROJECT --"
 CLAUDE_PROJECT_DIR="$PROJECT" node "$CLI" on
 
 echo ""
-echo "-- active --"
-check "active: main Read DENIED"                deny  main-read.json        "$PROJECT"
-check "active: subagent Read ALLOWED (exempt)"  allow subagent-read.json    "$PROJECT"
-check "active: Task w/o model DENIED"           deny  task-no-model.json    "$PROJECT"
-check "active: Task model=opus DENIED"          deny  task-opus-model.json  "$PROJECT"
-check "active: Task cheap model ALLOWED"        allow task-cheap-model.json "$PROJECT"
-check "active: Shell git status ALLOWED"        allow main-shell-git.json   "$PROJECT"
-check "active: Shell cat DENIED"                deny  main-shell-cat.json   "$PROJECT"
-check "active: Delete DENIED"                   deny  main-delete.json      "$PROJECT"
+echo "-- active, no dispatch outstanding: every conversation is the orchestrator --"
+check "active: main Read DENIED"                 deny  main-read.json
+check "active: subagent-shaped Read also DENIED" deny  subagent-read.json
+check "active: Task w/o model DENIED"            deny  task-no-model.json
+check "active: Task model=inherit DENIED"        deny  task-inherit-model.json
+check "active: Task model=opus DENIED"           deny  task-opus-model.json
+check "active: Task cheap model ALLOWED"         allow task-cheap-model.json
+check "active: Shell git status ALLOWED"         allow main-shell-git.json
+check "active: Shell cat DENIED"                 deny  main-shell-cat.json
+check "active: Delete DENIED"                    deny  main-delete.json
+
+echo ""
+echo "-- with a dispatch outstanding: the subagent's conversation is exempt --"
+render subagent-start.json | node "$SUBHOOK" >/dev/null
+check "outstanding: subagent Read ALLOWED (exempt)" allow subagent-read.json
+check "outstanding: orchestrator Read still DENIED" deny  main-read.json
+render subagent-stop.json | node "$SUBHOOK" >/dev/null
+check "after stop: subagent-shaped Read DENIED again" deny subagent-read.json
 
 echo ""
 echo "-- the deny payload carries both message fields --"
-out="$(sed "s#__PROJECT__#$PROJECT#g" "$FIXTURES/main-read.json" | node "$GATE")"
+out="$(render main-read.json | node "$GATE")"
 for field in user_message agent_message; do
   if echo "$out" | grep -q "\"$field\""; then
     echo "PASS: deny carries $field"; pass=$((pass+1))
@@ -1567,23 +2173,40 @@ if echo "$out" | grep -qF 'cheap/fast model'; then
 else
   echo "FAIL: deny text should not name Anthropic tiers -- output: $out"; fail=$((fail+1))
 fi
+if render task-inherit-model.json | node "$GATE" | grep -qF 'inherit'; then
+  echo "PASS: the inherit deny names the offending value"; pass=$((pass+1))
+else
+  echo "FAIL: the inherit deny does not mention inherit"; fail=$((fail+1))
+fi
 
 echo ""
-echo "-- ledger is written with conversation_id mapped onto session_id --"
+echo "-- ledger: conversation_id maps onto session_id, shared event names --"
 LEDGER="$PROJECT/.optimus/state/events.jsonl"
-if grep -q '"session_id":"probe-conv-1"' "$LEDGER"; then
+if grep -q '"session_id":"probe-conv-main"' "$LEDGER"; then
   echo "PASS: ledger session_id came from conversation_id"; pass=$((pass+1))
 else
-  echo "FAIL: ledger session_id not mapped -- $(cat "$LEDGER" 2>/dev/null || echo '(no ledger)')"; fail=$((fail+1))
+  echo "FAIL: ledger session_id not mapped"; fail=$((fail+1))
 fi
-if grep -q '"ev":"work_tool_denied"' "$LEDGER" && grep -q '"ev":"bash_nudge"' "$LEDGER"; then
-  echo "PASS: ledger uses the shared event names"; pass=$((pass+1))
+for ev in work_tool_denied bash_nudge dispatch_denied dispatch_allowed; do
+  if grep -q "\"ev\":\"$ev\"" "$LEDGER"; then
+    echo "PASS: ledger wrote $ev"; pass=$((pass+1))
+  else
+    echo "FAIL: ledger never wrote $ev"; fail=$((fail+1))
+  fi
+done
+if grep -q '"model":"claude-haiku-4-5"' "$LEDGER"; then
+  echo "PASS: dispatch_allowed recorded the requested model verbatim"; pass=$((pass+1))
 else
-  echo "FAIL: ledger event names diverge from the Claude Code build"; fail=$((fail+1))
+  echo "FAIL: requested model not recorded"; fail=$((fail+1))
+fi
+if grep -q '"user_email"' "$LEDGER"; then
+  echo "FAIL: ledger recorded user_email"; fail=$((fail+1))
+else
+  echo "PASS: ledger did not record user_email"; pass=$((pass+1))
 fi
 
 echo ""
-echo "-- malformed stdin fails OPEN --"
+echo "-- malformed stdin fails OPEN with an explicit allow --"
 out="$(echo 'not json at all' | node "$GATE")"
 if echo "$out" | grep -q '"permission":"allow"'; then
   echo "PASS: malformed payload allows"; pass=$((pass+1))
@@ -1592,13 +2215,21 @@ else
 fi
 
 echo ""
+echo "-- an unrecognized tool name fails open --"
+if printf '{"hook_event_name":"preToolUse","conversation_id":"probe-conv-main","cwd":"%s","tool_name":"MCP:atlassian_search","tool_input":{}}' "$PROJECT" | node "$GATE" | grep -q '"permission":"allow"'; then
+  echo "PASS: unknown tool allowed"; pass=$((pass+1))
+else
+  echo "FAIL: unknown tool was not allowed"; fail=$((fail+1))
+fi
+
+echo ""
 echo "-- kill switch forces allow --"
-check "kill switch: main Read ALLOWED" allow main-read.json "$PROJECT" "OPTIMUS_DISABLED=1"
+check "kill switch: main Read ALLOWED" allow main-read.json "OPTIMUS_DISABLED=1"
 
 echo ""
 echo "-- deactivating --"
 CLAUDE_PROJECT_DIR="$PROJECT" node "$CLI" off
-check "deactivated: main Read allowed again" allow main-read.json "$PROJECT"
+check "deactivated: main Read allowed again" allow main-read.json
 
 echo ""
 echo "== $pass passed, $fail failed =="
@@ -1624,28 +2255,35 @@ Expected: FAIL — `Cannot find module '.../hooks/optimus-gate-cursor.js'`.
  * Cursor preToolUse adapter.
  *
  * Thin by design, exactly like hooks/optimus-gate.js: it parses Cursor's
- * stdin shape, translates Cursor tool names into the core's normalized
- * vocabulary, decides via hooks/optimus-core.js, and emits Cursor's
- * permission JSON. No policy lives here.
+ * stdin shape, translates Cursor tool names and input keys into the
+ * core's normalized vocabulary, decides via hooks/optimus-core.js, and
+ * emits Cursor's permission JSON. No policy lives here.
  *
  * Cursor-specific plumbing that differs from Claude Code:
- *   - Output is {"permission":"allow"} / {"permission":"deny", ...}, and an
- *     allow is EXPLICIT (Claude Code allows by writing nothing).
+ *   - Output is {"permission":"allow"} / {"permission":"deny", ...}, and
+ *     an allow is EXPLICIT (Claude Code allows by writing nothing).
  *   - Always exit 0. On Cursor, exit code 2 means deny — exiting 2 for an
- *     allow result would block everything, silently.
+ *     allow would block everything, silently.
  *   - The payload carries conversation_id where Claude Code carries
  *     session_id. The ledger field stays session_id on both hosts so
  *     bin/optimus-stats needs no host branching (spec Section 1.6).
- *   - The payload carries a live `model`. It is passed to decide() as
- *     sessionModel but only consulted when a project sets
- *     modelConditional: true in .optimus/config.json. Off by default, so
- *     both hosts enforce on the same role-based basis out of the box.
+ *   - Role is not on the payload. Cursor sends nothing that marks a call
+ *     as a subagent's, so isSubagent comes from hooks/optimus-sidecar.js:
+ *     a call whose conversation is a recorded dispatch parent is the
+ *     orchestrator's, anything else while a dispatch is outstanding is a
+ *     subagent's. See docs/cursor-probe-findings.md.
+ *   - The payload carries a live `model`. It is passed as sessionModel
+ *     but only consulted when a project sets modelConditional: true in
+ *     .optimus/config.json. Off by default, so both hosts enforce on the
+ *     same role-based basis out of the box.
  *
- * Fails OPEN on any internal error, same as the Claude Code gate. Note
- * that Cursor ALSO fails open on a crash unless "failClosed": true is set
- * per script in hooks.json — so a bug here means enforcement silently
- * does not apply rather than blocking a user. That is consistent with
- * Optimus's stated philosophy and must stay documented, not discovered.
+ * Fails OPEN on any internal error, same as the Claude Code gate. Cursor
+ * ALSO fails open on a crash unless "failClosed": true is set per script
+ * in hooks.json — confirmed empirically: a hook that exits non-zero with
+ * no output is logged as "none returned a valid response" and the tool
+ * call proceeds. So a bug here means enforcement silently does not apply
+ * rather than blocking a user. That is consistent with Optimus's stated
+ * philosophy and must stay documented, not discovered.
  */
 
 const path = require('path');
@@ -1653,6 +2291,7 @@ const { isKillSwitchActive, getConfig } = require(
   path.join(__dirname, 'optimus-config.js')
 );
 const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
+const { isSubagentConversation } = require(path.join(__dirname, 'optimus-sidecar.js'));
 const {
   decide,
   ledgerEventFor,
@@ -1664,11 +2303,16 @@ const {
 /**
  * Cursor tool name -> normalized core vocabulary.
  *
- * REPLACE THE RIGHT-HAND SIDE FROM docs/cursor-probe-findings.md's
- * tool-name table. The entries below are the documented/expected names;
- * any name Task 4 recorded differently wins over this table. An
- * unrecognized name deliberately passes through unchanged and therefore
- * lands outside WORK_TOOLS and is ALLOWED — failing open on vocabulary,
+ * Every mapping here was observed on Cursor 3.19.13 and is recorded in
+ * docs/cursor-probe-findings.md, EXCEPT Edit, Glob and NotebookEdit:
+ * Cursor has no distinct tool for any of the three (a partial edit is a
+ * Read then a whole-file Write; globbing is Grep with an empty pattern
+ * and a glob; a notebook edit is Read+Write on the .ipynb). They are kept
+ * as inert future-proofing so that a Cursor version which does introduce
+ * them starts being enforced rather than silently allowed.
+ *
+ * An unrecognized name deliberately passes through unchanged, lands
+ * outside WORK_TOOLS, and is ALLOWED — failing open on vocabulary,
  * consistent with the rest of the plugin. Add an observed name here to
  * start denying it.
  */
@@ -1677,14 +2321,23 @@ const CURSOR_TOOL_MAP = {
   Shell: SHELL,
   Read: 'Read',
   Write: 'Write',
-  Edit: 'Edit',
   Grep: 'Grep',
-  Glob: 'Glob',
   Delete: 'Delete',
   WebFetch: 'WebFetch',
   WebSearch: 'WebSearch',
+  Edit: 'Edit',
+  Glob: 'Glob',
   NotebookEdit: 'NotebookEdit',
 };
+
+/**
+ * A dispatch model of "inherit" means the subagent runs on the
+ * orchestrator's own model — exactly what the dispatch rule exists to
+ * prevent, and EXPENSIVE_MODEL_RE does not match the word. It is treated
+ * as "no model named", which is what it functionally is. Observed as the
+ * real value Cursor's Task tool sends by default.
+ */
+const INHERIT_MODEL_RE = /^inherit$/i;
 
 function normalizeTool(toolName) {
   if (typeof toolName !== 'string') return '';
@@ -1695,57 +2348,26 @@ function normalizeTool(toolName) {
 }
 
 /**
- * Presents Cursor's raw tool_input under the three key names the core
- * reads: model, subagent_type, command.
- *
- * REPLACE THE SOURCE KEY NAMES FROM docs/cursor-probe-findings.md. The
- * spec flags Cursor's Task tool_input shape as unverified — whether it
- * carries a model-selection field at all, and under what name. The
- * fallbacks below are ordered most-likely-first; a name Task 4 observed
- * belongs at the front of its list.
+ * Presents Cursor's raw tool_input under the key names the core reads:
+ * model, subagent_type, command. Cursor's other input keys (file_path,
+ * content, pattern, url, search_term) are never read by the core, so
+ * non-dispatch, non-shell inputs pass through untouched.
  */
 function normalizeInput(tool, rawInput) {
   const raw = rawInput && typeof rawInput === 'object' ? rawInput : {};
   if (tool === AGENT_DISPATCH) {
+    const requested = typeof raw.model === 'string' ? raw.model.trim() : '';
     return {
-      model: raw.model || raw.model_id || raw.subagent_model,
-      subagent_type: raw.subagent_type || raw.agent || raw.agent_type,
+      // Deliberately NOT payload.model: the probe showed the top-level
+      // model on a Task payload is the empty string.
+      model: INHERIT_MODEL_RE.test(requested) ? undefined : raw.model,
+      subagent_type: raw.subagent_type,
     };
   }
   if (tool === SHELL) {
-    return { command: raw.command || raw.cmd || raw.script };
+    return { command: raw.command };
   }
   return raw;
-}
-
-/**
- * Determines whether this payload originates inside a dispatched
- * subagent rather than the orchestrator.
- *
- * THIS FUNCTION IS THE WHOLE OUTCOME OF SPEC SECTION 5.1. Its body must
- * match the verdict recorded in docs/cursor-probe-findings.md:
- *
- *   row 1 (distinguishing field): check that field, as below.
- *   row 3 (subagent calls never fire preToolUse): return false always —
- *          if the hook never fires for a subagent, every payload it does
- *          see is the orchestrator's.
- *   row 2 (no distinguishing field): delegate to the sidecar reader
- *          built in Task 6 instead of the field check.
- *
- * The field names below are the candidates the probe report surfaces.
- * Keep only what Task 4 actually observed, and treat it as an
- * undocumented, unversioned dependency: re-run the probe on every Cursor
- * upgrade.
- */
-function isSubagentPayload(payload) {
-  return Boolean(
-    payload.subagent_id ||
-      payload.subagent_type ||
-      payload.agent_id ||
-      payload.agent_type ||
-      payload.parent_conversation_id ||
-      payload.is_parallel_worker
-  );
 }
 
 /** Cursor-facing deny text. Generic model tiers, never Anthropic aliases. */
@@ -1753,14 +2375,14 @@ function denyMessages(decision) {
   switch (decision.reason) {
     case REASON.NO_MODEL_SET:
       return {
-        user_message: 'Optimus blocked a subagent dispatch that named no model.',
+        user_message: 'Optimus blocked a subagent dispatch that named no usable model.',
         agent_message:
-          'Optimus: this Task dispatch sets no model, so it would silently inherit the ' +
-          "orchestrator's own expensive model instead of running cheaper. Re-dispatch and set " +
-          'the model explicitly: a cheap/fast model for simple, mechanical work (file lookups, ' +
-          'boilerplate edits, running a command and reporting its output), and a stronger model ' +
-          'only for work that genuinely needs judgement. Never dispatch a subagent on the same ' +
-          'expensive model driving this session.',
+          'Optimus: this Task dispatch names no model of its own (an absent model, or ' +
+          'model="inherit"), so it would run on the same expensive model as this session ' +
+          'instead of running cheaper. Re-dispatch with an explicit model: a cheap/fast model ' +
+          'for simple, mechanical work (file lookups, boilerplate edits, running a command and ' +
+          'reporting its output), and a stronger model only for work that genuinely needs ' +
+          'judgement. Never dispatch a subagent on the same expensive model driving this session.',
       };
     case REASON.EXPENSIVE_MODEL_DISPATCH:
       return {
@@ -1824,9 +2446,6 @@ function main(raw) {
   }
   if (!payload || typeof payload !== 'object') return allow();
 
-  // Subagent exemption. First, and before any config I/O.
-  if (isSubagentPayload(payload)) return allow();
-
   let cfg;
   try {
     cfg = getConfig(payload.cwd);
@@ -1835,6 +2454,18 @@ function main(raw) {
   }
   if (!cfg.enabled) return allow();
 
+  // Role comes from the sidecar, not the payload. Checked after the
+  // activation gate rather than before it, because unlike Claude Code's
+  // agent_id field this costs a directory read — and there is nothing to
+  // exempt in a project where Optimus is not active anyway.
+  let isSubagent = false;
+  try {
+    isSubagent = isSubagentConversation(payload.cwd, payload.conversation_id);
+  } catch (e) {
+    isSubagent = false; // enforce rather than exempt if attribution fails
+  }
+  if (isSubagent) return allow();
+
   const tool = normalizeTool(payload.tool_name);
   const toolInput = normalizeInput(tool, payload.tool_input);
 
@@ -1842,6 +2473,8 @@ function main(raw) {
     tool: tool,
     toolInput: toolInput,
     isSubagent: false,
+    // model_id was absent from every preToolUse payload observed, despite
+    // being documented; model carried the plain slug. Fall back.
     sessionModel: typeof payload.model_id === 'string' ? payload.model_id : payload.model,
     config: cfg.raw && cfg.raw.modelConditional
       ? { enabled: true, modelConditional: true }
@@ -1884,7 +2517,13 @@ process.stdin.on('end', () => {
 });
 ```
 
-- [ ] **Step 4: Run the Cursor suite to verify it passes**
+One deliberate consequence of rejecting `inherit` through `normalizeInput`: the ledger records
+`dispatch_denied` with `reason: 'no_model'` for it, and no `model` field, because the core sees an
+absent model. That keeps the ledger's vocabulary and `bin/optimus-stats`' reader unchanged. The
+user-facing message names `model="inherit"` explicitly so the distinction is not lost where it
+matters.
+
+- [ ] **Step 4: Run the Cursor suite**
 
 ```bash
 ./tests/run-gate-cursor-tests.sh
@@ -1896,345 +2535,17 @@ Expected: `0 failed`.
 
 ```bash
 ./tests/run-core-tests.sh && ./tests/run-gate-tests.sh && ./tests/run-ledger-tests.sh \
-  && ./tests/run-stats-tests.sh && ./tests/run-probe-report-tests.sh && ./tests/run-gate-cursor-tests.sh
+  && ./tests/run-stats-tests.sh && ./tests/run-probe-report-tests.sh \
+  && ./tests/run-sidecar-tests.sh && ./tests/run-gate-cursor-tests.sh
 ```
 
-Expected: `0 failed` in all six.
+Expected: `0 failed` in all seven.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add hooks/optimus-gate-cursor.js tests/fixtures/cursor tests/run-gate-cursor-tests.sh
 git commit -m "feat: add Cursor preToolUse adapter over the shared policy core"
-```
-
----
-
-## Task 6: Sidecar subagent correlation (ONLY if Task 4 landed on row 2)
-
-**Skip this task entirely** unless `docs/cursor-probe-findings.md` records "row 2 — no distinguishing field". Task 5's routing table says so; this task exists so that outcome does not need a new plan.
-
-**Files:**
-- Create: `hooks/optimus-sidecar.js`
-- Create: `hooks/optimus-subagent-cursor.js`
-- Create: `tests/run-sidecar-tests.sh`
-- Modify: `hooks/optimus-gate-cursor.js` (`isSubagentPayload` delegates to the sidecar)
-
-**Interfaces:**
-- Consumes: `findProjectRoot` from `hooks/optimus-config.js`.
-- Produces, from `hooks/optimus-sidecar.js`:
-  - `markActive(cwd, id) -> void`
-  - `clearActive(cwd, id) -> void`
-  - `anyActive(cwd) -> boolean`
-  - `STALE_MS` (number), `SIDECAR_DIRNAME` (string)
-
-**One marker file per subagent, not one JSON document.** A single `active-subagents.json` would need read-modify-write, reopening exactly the concurrency race the append-only ledger design avoids — and `subagentStart`'s own documented `is_parallel_worker` field says parallel subagents happen. `markActive` creates `<root>/.optimus/state/active-subagents/<id>`; `clearActive` unlinks it; `anyActive` is a `readdirSync` non-empty check. No two writers ever touch the same path.
-
-**Known imprecision, to be documented and not hidden:** this exempts *any* tool call made while some subagent is outstanding, not "this specific subagent's own calls". A main-agent `Read` issued while a subagent is running is wrongly exempted. That is strictly coarser than the Claude Code build. Say so in the README (Task 9), in these words: enforcement on Cursor is suspended while any subagent is outstanding.
-
-**Stale markers expire.** A missed `subagentStop` (crash, force-quit, window reload mid-dispatch) would otherwise exempt the project forever. `anyActive` ignores markers older than `STALE_MS` (30 minutes) and unlinks them opportunistically.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `tests/run-sidecar-tests.sh`:
-
-```bash
-#!/usr/bin/env bash
-# Lifecycle tests for the Cursor subagent sidecar.
-set -euo pipefail
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
-PROJECT="$WORKDIR/project"
-mkdir -p "$PROJECT"
-CLAUDE_PROJECT_DIR="$PROJECT" node "$ROOT/bin/optimus-cli" on >/dev/null
-
-echo "== Optimus sidecar tests =="
-node - "$ROOT" "$PROJECT" <<'NODE'
-const path = require('path');
-const fs = require('fs');
-const assert = require('assert');
-const [root, project] = process.argv.slice(2);
-const s = require(path.join(root, 'hooks', 'optimus-sidecar.js'));
-const dir = path.join(project, '.optimus', 'state', s.SIDECAR_DIRNAME);
-
-let pass = 0, fail = 0;
-function t(name, fn) {
-  try { fn(); console.log('PASS: ' + name); pass++; }
-  catch (e) { console.log('FAIL: ' + name + ' -- ' + e.message); fail++; }
-}
-
-t('nothing active on a fresh project', () => assert.strictEqual(s.anyActive(project), false));
-t('markActive makes it active', () => { s.markActive(project, 'sub-1'); assert.strictEqual(s.anyActive(project), true); });
-t('a second subagent is independent', () => { s.markActive(project, 'sub-2'); assert.strictEqual(fs.readdirSync(dir).length, 2); });
-t('clearing one leaves the other active', () => { s.clearActive(project, 'sub-1'); assert.strictEqual(s.anyActive(project), true); });
-t('clearing the last one deactivates', () => { s.clearActive(project, 'sub-2'); assert.strictEqual(s.anyActive(project), false); });
-t('clearing an unknown id is a no-op, not a throw', () => { s.clearActive(project, 'nope'); assert.strictEqual(s.anyActive(project), false); });
-t('an id with path separators cannot escape the sidecar dir', () => {
-  s.markActive(project, '../../escaped');
-  assert.strictEqual(fs.existsSync(path.join(project, '.optimus', 'escaped')), false);
-  s.clearActive(project, '../../escaped'); // leave nothing active for the stale test below
-});
-t('a stale marker is ignored and swept', () => {
-  s.markActive(project, 'stale-1');
-  const f = path.join(dir, 'stale-1');
-  const old = new Date(Date.now() - s.STALE_MS - 60000);
-  fs.utimesSync(f, old, old);
-  assert.strictEqual(s.anyActive(project), false);
-  assert.strictEqual(fs.existsSync(f), false);
-});
-t('anyActive on a non-Optimus directory is false, not a throw', () => {
-  assert.strictEqual(s.anyActive('/tmp'), false);
-});
-
-console.log('');
-console.log('== ' + pass + ' passed, ' + fail + ' failed ==');
-process.exit(fail === 0 ? 0 : 1);
-NODE
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-```bash
-chmod +x tests/run-sidecar-tests.sh
-./tests/run-sidecar-tests.sh
-```
-
-Expected: FAIL — `Cannot find module '.../hooks/optimus-sidecar.js'`.
-
-- [ ] **Step 3: Write `hooks/optimus-sidecar.js`**
-
-```js
-'use strict';
-
-/**
- * Coarse subagent-activity tracker for the Cursor build.
- *
- * Only used when spec Section 5.1's probe landed on decision-matrix
- * row 2: Cursor's preToolUse payload cannot distinguish a subagent's own
- * tool call from the orchestrator's, so the gate falls back to "is ANY
- * subagent outstanding right now" as its exemption signal.
- *
- * One marker FILE per subagent, never one shared JSON document. A shared
- * document would need read-modify-write, which reopens exactly the
- * concurrency race hooks/optimus-ledger.js's append-only design avoids —
- * and subagentStart's own is_parallel_worker field says parallel
- * subagents are real. Two writers never touch the same path here.
- *
- * Never throws. This sits on the gate's hot path.
- */
-
-const fs = require('fs');
-const path = require('path');
-const { findProjectRoot } = require(path.join(__dirname, 'optimus-config.js'));
-
-const SIDECAR_DIRNAME = 'active-subagents';
-/** A marker older than this is treated as abandoned (missed subagentStop). */
-const STALE_MS = 30 * 60 * 1000;
-
-/** Reduces an id to a single safe path segment. Never returns ''. */
-function safeId(id) {
-  const cleaned = String(id == null ? '' : id).replace(/[^\w.-]/g, '_').slice(0, 128);
-  return cleaned === '' || cleaned === '.' || cleaned === '..' ? 'unknown' : cleaned;
-}
-
-function sidecarDir(cwd) {
-  const root = findProjectRoot(cwd);
-  if (!root) return null;
-  return path.join(root, '.optimus', 'state', SIDECAR_DIRNAME);
-}
-
-function markActive(cwd, id) {
-  try {
-    const dir = sidecarDir(cwd);
-    if (!dir) return;
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, safeId(id)), '', { mode: 0o600 });
-  } catch (e) {
-    // best effort only — a failure here means enforcement stays on for
-    // that subagent's calls, which is the safe direction to fail on a
-    // host where we cannot identify the caller anyway.
-  }
-}
-
-function clearActive(cwd, id) {
-  try {
-    const dir = sidecarDir(cwd);
-    if (!dir) return;
-    fs.unlinkSync(path.join(dir, safeId(id)));
-  } catch (e) {
-    // already gone, or never written — nothing to do
-  }
-}
-
-/**
- * True if at least one non-stale subagent marker exists. Stale markers
- * are unlinked as they are found, so a missed subagentStop cannot
- * exempt a project indefinitely.
- */
-function anyActive(cwd) {
-  try {
-    const dir = sidecarDir(cwd);
-    if (!dir) return false;
-    const names = fs.readdirSync(dir);
-    const cutoff = Date.now() - STALE_MS;
-    let active = 0;
-    for (const name of names) {
-      const file = path.join(dir, name);
-      try {
-        if (fs.statSync(file).mtimeMs < cutoff) {
-          fs.unlinkSync(file);
-        } else {
-          active++;
-        }
-      } catch (e) {
-        // vanished mid-scan — treat as not active
-      }
-    }
-    return active > 0;
-  } catch (e) {
-    return false; // no sidecar dir, unreadable, not an Optimus project
-  }
-}
-
-module.exports = { markActive, clearActive, anyActive, SIDECAR_DIRNAME, STALE_MS };
-```
-
-- [ ] **Step 4: Write `hooks/optimus-subagent-cursor.js`**
-
-```js
-#!/usr/bin/env node
-'use strict';
-
-/**
- * Cursor subagentStart / subagentStop adapter.
- *
- * Maintains the sidecar the Cursor gate consults when Cursor's
- * preToolUse payload cannot identify the calling role (spec Section 5.1
- * decision-matrix row 2). One executable, both events — it branches on
- * hook_event_name.
- *
- * Always emits an explicit allow and exits 0. It enforces nothing.
- */
-
-const path = require('path');
-const { isKillSwitchActive, getConfig } = require(
-  path.join(__dirname, 'optimus-config.js')
-);
-const { markActive, clearActive } = require(path.join(__dirname, 'optimus-sidecar.js'));
-
-function done() {
-  process.stdout.write(JSON.stringify({ permission: 'allow' }));
-  process.exit(0);
-}
-
-function main(raw) {
-  if (isKillSwitchActive()) return done();
-
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (e) {
-    return done();
-  }
-  if (!payload || typeof payload !== 'object') return done();
-
-  let cfg;
-  try {
-    cfg = getConfig(payload.cwd);
-  } catch (e) {
-    return done();
-  }
-  if (!cfg.enabled) return done();
-
-  // subagentStart documents subagent_id; fall back through the other ids
-  // it carries so a renamed field degrades to a coarser-but-working
-  // marker rather than to no marker at all.
-  const id =
-    payload.subagent_id ||
-    payload.tool_call_id ||
-    payload.generation_id ||
-    payload.conversation_id;
-
-  if (payload.hook_event_name === 'subagentStart') {
-    markActive(payload.cwd, id);
-  } else if (payload.hook_event_name === 'subagentStop') {
-    clearActive(payload.cwd, id);
-  }
-  return done();
-}
-
-let raw = '';
-process.stdin.on('data', (d) => {
-  raw += d;
-});
-process.stdin.on('end', () => {
-  try {
-    main(raw);
-  } catch (e) {
-    try {
-      process.stdout.write(JSON.stringify({ permission: 'allow' }));
-    } catch (e2) {
-      // nothing left to do
-    }
-    process.exit(0);
-  }
-});
-```
-
-- [ ] **Step 5: Point the gate at the sidecar**
-
-In `hooks/optimus-gate-cursor.js`, add to the requires:
-
-```js
-const { anyActive } = require(path.join(__dirname, 'optimus-sidecar.js'));
-```
-
-and replace the whole body of `isSubagentPayload` with:
-
-```js
-/**
- * Cursor's preToolUse payload carries no field that distinguishes a
- * subagent's own tool call from the orchestrator's (spec Section 5.1,
- * decision-matrix row 2 — see docs/cursor-probe-findings.md). So this
- * falls back to sidecar correlation: exempt everything while ANY
- * subagent is outstanding in this project.
- *
- * This is deliberately coarser than the Claude Code build, and the
- * imprecision is real: a main-agent tool call made while a subagent is
- * running is wrongly exempted. Documented in the README rather than
- * hidden. The field checks are kept ahead of it so that if a future
- * Cursor version starts sending an identity field, the precise path
- * takes over automatically.
- */
-function isSubagentPayload(payload) {
-  if (
-    payload.subagent_id ||
-    payload.subagent_type ||
-    payload.parent_conversation_id ||
-    payload.is_parallel_worker
-  ) {
-    return true;
-  }
-  return anyActive(payload.cwd);
-}
-```
-
-- [ ] **Step 6: Run everything**
-
-```bash
-./tests/run-sidecar-tests.sh && ./tests/run-gate-cursor-tests.sh && ./tests/run-core-tests.sh \
-  && ./tests/run-gate-tests.sh && ./tests/run-ledger-tests.sh && ./tests/run-stats-tests.sh
-```
-
-Expected: `0 failed` everywhere. `run-gate-cursor-tests.sh`'s `subagent-read.json` case still passes on the field path, since Step 5 keeps the field checks first.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add hooks/optimus-sidecar.js hooks/optimus-subagent-cursor.js hooks/optimus-gate-cursor.js tests/run-sidecar-tests.sh
-git commit -m "feat: add sidecar subagent correlation for the Cursor build"
 ```
 
 ---
@@ -2469,21 +2780,40 @@ This is a **template**, not a file Cursor reads from this path. `__OPTIMUS_ROOT_
     ],
     "sessionStart": [
       { "command": "node \"__OPTIMUS_ROOT__/hooks/optimus-session-cursor.js\"" }
-    ]
-  }
-}
-```
-
-If Task 6 ran (sidecar fallback), also add:
-
-```json
+    ],
     "subagentStart": [
       { "command": "node \"__OPTIMUS_ROOT__/hooks/optimus-subagent-cursor.js\"" }
     ],
     "subagentStop": [
       { "command": "node \"__OPTIMUS_ROOT__/hooks/optimus-subagent-cursor.js\"" }
     ]
+  }
+}
 ```
+
+All four events are unconditional: the probe landed on row 2, so the sidecar is the only thing that
+tells a subagent's calls apart from the orchestrator's, and without `subagentStart`/`subagentStop`
+the gate would enforce against every subagent Optimus dispatches.
+
+**Schema facts this file relies on, all established empirically in
+`docs/cursor-probe-findings.md` — do not "improve" any of them:**
+
+- `"version": 1` and the flat `hooks.<eventName>[].command` shape are accepted as written.
+- `matcher` is optional and, when present, is a regex over the tool name. It is deliberately
+  omitted here: the gate must see every tool, and it decides for itself which ones it cares about.
+- **Do NOT use `${workspaceFolder}`.** It is a VS Code editor variable, not a hook variable: in a
+  Cursor hook command it expands to the empty string, producing `node "/hooks/..."` and a
+  `MODULE_NOT_FOUND` that logs nothing at all — indistinguishable from a hook that never
+  registered. `${CURSOR_PLUGIN_ROOT}`, `${PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_ROOT}` are all empty
+  in a project hook too. Only `${CURSOR_PROJECT_DIR}` and `${CLAUDE_PROJECT_DIR}` resolve there,
+  both to the workspace root — which is not where Optimus's scripts live, hence the absolute path
+  rendered by Task 8.
+- Multiple entries on one event all run, and Cursor merges their responses.
+- Cursor watches `hooks.json` and reloads it on **write**; no window reload is needed. But
+  **deleting** the file does not deregister its hooks — only a write is watched. Anything that
+  needs to turn these hooks off must overwrite with `{"version": 1, "hooks": {}}`, never unlink.
+- Project and User hooks are merged, not overridden, so installing this does not disable a user's
+  own `~/.cursor/hooks.json` hooks.
 
 `beforeShellExecution` is deliberately **not** registered. The spec notes it is the more idiomatic Cursor hook for shell interception, but `preToolUse` already sees `Shell` calls, and registering both would double-fire the same policy and write the ledger twice for one command. Revisit only if the probe shows `preToolUse` does not fire for shell calls — and if so, record that in the findings file first.
 
@@ -2879,7 +3209,54 @@ chmod +x tests/run-all.sh
 
 Expected: `ALL SUITES PASSED`, with `run-sidecar-tests.sh` listed under SKIP if Task 6 did not run.
 
-- [ ] **Step 3: Update `README.md`**
+- [ ] **Step 3: Correct the probe kit against what the probe actually found**
+
+The kit shipped in Task 3 contains one defect that would trap the next person to run it, plus two
+procedural errors. All three are recorded in `docs/cursor-probe-findings.md`.
+
+In `cursor/probe/hooks.probe.json`, replace the `${workspaceFolder}` command path — it expands to
+the empty string in a Cursor hook and fails with `MODULE_NOT_FOUND`, logging nothing, which is
+exactly the "if nothing landed, stop here" trap the README warns about. Use a project-root-relative
+path, and add the `matcher` that keeps the analyser's own `Shell` calls out of the log:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      { "command": "node \".cursor/probe/probe.js\"", "matcher": "Read" }
+    ],
+    "subagentStart": [
+      { "command": "node \".cursor/probe/probe.js\"" }
+    ],
+    "subagentStop": [
+      { "command": "node \".cursor/probe/probe.js\"" }
+    ]
+  }
+}
+```
+
+In `cursor/probe/README.md`:
+
+- Step 4 ("reload the Cursor window so the hook registers") is wrong — Cursor reloads `hooks.json`
+  on write. Replace it with: "save the file and allow a couple of seconds to settle; Cursor watches
+  `hooks.json` and reloads on write. No window reload is needed. Note that **deleting**
+  `hooks.json` does NOT deregister its hooks — to turn them off, write `{"version": 1, "hooks": {}}`."
+- Step 7 (dispatch the `file-reader` subagent) needs a note that project-level agent definitions in
+  `.cursor/agents/` do NOT hot-reload, so a freshly written one is rejected with an
+  `Invalid enum value` listing the built-in types. Either reload the window or use a built-in type
+  such as `explore`, which answers the Unknown-1 question identically.
+- Add to "Before you start": the fastest debugging surface is Cursor's own hooks log at
+  `~/Library/Application Support/Cursor/logs/<session>/window<N>/output_<ts>/cursor.hooks.workspaceId-<id>.log`,
+  which records `INPUT`, `OUTPUT` and `STDERR` per invocation.
+- Add to the Unknown-2 section: clear or move `probe-root.log` between Pass A and Pass B, otherwise
+  a `__dirname`-only result cannot be attributed to either variable. (Deferred minor from Task 3's
+  review.)
+
+Then re-run `./tests/run-probe-report-tests.sh` — it does not read these files, so it must still
+pass unchanged.
+
+- [ ] **Step 4: Update `README.md`**
 
 Three edits. Content, not paraphrase:
 
@@ -2980,11 +3357,70 @@ subagent is running is not blocked. See `docs/cursor-probe-findings.md`.
   Enterprise. Both look identical to "Optimus is broken".
 ```
 
-- [ ] **Step 4: Bump the version**
+**(d)** Add these probe-established facts to the Cursor section. They are the things a user or a
+future maintainer cannot work out from the code, and every one of them cost a probe run to learn.
+Sources: `docs/cursor-probe-findings.md`.
+
+```markdown
+### How Optimus tells your subagents apart on Cursor
+
+Cursor sends nothing on a tool-call hook that marks the call as a subagent's — the payload from a
+subagent is shaped exactly like the orchestrator's. What it does send is `conversation_id`, and a
+subagent gets its own. So Optimus records the dispatching conversation for the lifetime of each
+subagent (`subagentStart` → `subagentStop`, one small file per outstanding subagent under
+`.optimus/state/active-subagents/`) and treats any *other* conversation as a subagent's while a
+dispatch is outstanding. That is exact per-call attribution, and it is safe with any number of
+subagents running at once.
+
+Two limits worth knowing:
+
+- **Two Cursor windows on the same project.** If window A has a subagent outstanding, window B's
+  own tool calls look like a subagent's and are not enforced. Fail-open, and the kill switch or
+  `/optimus off` behave normally.
+- **A subagent that dispatches its own subagent** would have its own calls enforced. Nested
+  dispatch was not observed on Cursor 3.19.13 and is not supported by this build.
+
+### Cursor quirks Optimus works around
+
+- **Denying `Read` also blocks writes to files that already exist**, because Cursor issues an
+  internal `Read` of the target before a `Write`. This is not something Optimus can separate;
+  read-scoped and write-scoped policy are not independent on Cursor. It does not change anything
+  for Optimus, which denies both in the orchestrator anyway.
+- **Web search and URL fetch write to a cache** under
+  `~/.cursor/projects/<workspace>/agent-tools/`, and those writes fire the tool hook as `Write`.
+  Optimus needs no path exemption for them: `WebFetch`/`WebSearch` are themselves delegated work,
+  so the orchestrator never gets as far as the cache write, and inside a subagent both the fetch
+  and its cache write are exempt.
+- **Turning the hooks off means writing an empty config, not deleting the file.** Cursor watches
+  `.cursor/hooks.json` for writes and reloads on save — no window reload needed — but deleting it
+  does not deregister anything. `{"version": 1, "hooks": {}}` clears them.
+- **Debugging the gate:** Cursor writes every hook invocation, with `INPUT`, `OUTPUT` and
+  `STDERR`, to
+  `~/Library/Application Support/Cursor/logs/<session>/window<N>/output_<ts>/cursor.hooks.workspaceId-<id>.log`.
+  Start there, not with guesswork. Re-verify the findings in `docs/cursor-probe-findings.md` from
+  that log after a Cursor upgrade.
+- **A dispatch with `model: "inherit"` is blocked**, the same as one that names no model at all —
+  `inherit` means the subagent runs on the orchestrator's expensive model, which is the exact thing
+  the rule exists to prevent.
+
+### If you have the Claude Code plugin installed and you use Cursor
+
+Cursor reads Claude Code plugin manifests. With no `.cursor/hooks.json` at all, it finds Optimus's
+`hooks/hooks.json`, maps `PreToolUse` onto its own `preToolUse`, resolves `${CLAUDE_PLUGIN_ROOT}`,
+and runs `hooks/optimus-gate.js` on every matched tool call.
+
+**That hook is a silent no-op on Cursor, and its deny path fails open.** Its allow path is Claude
+Code's "emit nothing", which Cursor also reads as allow, so allows happen to work. But a deny emits
+`hookSpecificOutput.permissionDecision: "deny"`, which Cursor does not understand — it logs "none
+returned a valid response" and lets the call through. So if you have the plugin and you are working
+in Cursor, you are not enforced until you run `optimus-cli install cursor`, and nothing warns you.
+```
+
+- [ ] **Step 5: Bump the version**
 
 In `.claude-plugin/plugin.json`, change `"version": "0.2.0"` to `"version": "0.3.0"`, and add `"cursor"` to the `keywords` array.
 
-- [ ] **Step 5: Verify**
+- [ ] **Step 6: Verify**
 
 ```bash
 ./tests/run-all.sh
@@ -2993,10 +3429,10 @@ node -e 'const p=require("./.claude-plugin/plugin.json"); console.log(p.version,
 
 Expected: `ALL SUITES PASSED`, then `0.3.0 orchestration,cost,subagents,hooks,delegation,cursor`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add tests/run-all.sh README.md .claude-plugin/plugin.json
+git add tests/run-all.sh README.md .claude-plugin/plugin.json cursor/probe
 git commit -m "docs: document the Cursor build; add a single test entry point; bump to 0.3.0"
 ```
 
@@ -3036,6 +3472,6 @@ Every section of `docs/cursor-support-spec.md` mapped to the task that implement
 
 ## Execution
 
-Task order: **1 → 2 → 3 → 4 (human) → 5 → [6 if row 2] → 7 → 8 → 9**.
+Task order: **1 → 2 → 3 → 4 (human) → 5 → 6 → 7 → 8 → 9**. Tasks 5 and 6 were rewritten after the probe; Task 5 is now the sidecar and Task 6 the adapter, and both are unconditional because the probe landed on row 2.
 
 Tasks 1–2 and Task 3 are independent of each other and may run in parallel. Task 4 is a hard checkpoint — an agent must hand back there.
