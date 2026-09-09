@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "subagentStop",
+  "conversation_id": "probe-conv-sub",
+  "parent_conversation_id": "probe-conv-main",
+  "subagent_id": "toolu_bdrk_probe_task_1",
+  "subagent_type": "explore",
+  "status": "completed",
+  "cursor_version": "3.19.13",
+  "cwd": "__PROJECT__"
+}

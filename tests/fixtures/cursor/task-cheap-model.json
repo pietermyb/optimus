@@ -1,0 +1,15 @@
+{
+  "hook_event_name": "preToolUse",
+  "conversation_id": "probe-conv-main",
+  "session_id": "probe-conv-main",
+  "generation_id": "probe-gen-1",
+  "model": "claude-opus-5",
+  "cursor_version": "3.19.13",
+  "workspace_roots": ["__PROJECT__"],
+  "transcript_path": "/tmp/does-not-exist.jsonl",
+  "cwd": "__PROJECT__",
+  "tool_name": "Task",
+  "tool_input": { "description": "read work.txt", "prompt": "read work.txt", "subagent_type": "explore", "model": "claude-haiku-4-5" },
+  "tool_use_id": "toolu_bdrk_probe_task_cheap",
+  "agent_message": "Reading work.txt"
+}

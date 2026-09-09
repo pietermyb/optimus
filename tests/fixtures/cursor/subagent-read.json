@@ -1,0 +1,15 @@
+{
+  "hook_event_name": "preToolUse",
+  "conversation_id": "probe-conv-sub",
+  "session_id": "probe-conv-sub",
+  "generation_id": "probe-gen-2",
+  "model": "cursor-grok-4.5-high",
+  "cursor_version": "3.19.13",
+  "workspace_roots": ["__PROJECT__"],
+  "transcript_path": null,
+  "cwd": "__PROJECT__",
+  "tool_name": "Read",
+  "tool_input": { "file_path": "work.txt" },
+  "tool_use_id": "call-probe-sub-1",
+  "agent_message": "Reading work.txt"
+}
