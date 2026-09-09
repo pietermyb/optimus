@@ -176,7 +176,8 @@ Optimus/
 │   └── optimus-stats.md     # /optimus-stats — invokes bin/optimus-stats via PATH
 ├── tests/
 │   ├── fixtures/*.json      # captured-shape PreToolUse payloads (main session, subagent, Agent dispatches, Bash)
-│   └── run-gate-tests.sh    # feeds each fixture to optimus-gate.js and checks the allow/deny outcome
+│   ├── run-gate-tests.sh    # feeds each fixture to optimus-gate.js and checks the allow/deny outcome
+│   └── run-stats-tests.sh   # synthetic transcripts; checks optimus-stats' project-dir resolution (slug + fallback)
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -267,15 +268,19 @@ proactively instead of only after being denied once).
   *specific* cheaper model chosen was the right call for the task.
   Perfect world - lookups/mechanical edits to Haiku, judgement calls to Sonnet.
 - **Token/cost stats depend on Claude Code's transcript file layout**
-  (`~/.claude/projects/<slug>/`, `<session-id>/subagents/agent-<id>.jsonl`)
-  and an empirically-observed project-slug format (cwd path separators
-  replaced with dashes) — all undocumented implementation details, not a
-  stable public API. A future Claude Code version could change this layout
-  without warning; `/optimus-stats` degrades to "no data" rather than
-  crashing if the expected directory just isn't there, but a *changed*
-  layout it doesn't recognize would look the same as "no data yet" rather
-  than raising a clear error. If stats stop showing up after a Claude Code
-  update, this is the first place to look.
+  (`<config dir>/projects/<slug>/`, `<session-id>/subagents/agent-<id>.jsonl`,
+  where `<config dir>` is `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`) and
+  an empirically-observed project-slug format (every non-alphanumeric
+  character in the cwd replaced with a dash) — all undocumented
+  implementation details, not a stable public API. Because that slug is a
+  guess, `/optimus-stats` also falls back to scanning each project
+  directory's own transcripts for a `cwd` field that matches exactly, so a
+  wrong guess (or even a changed slug format) doesn't produce a false
+  "no data". A future Claude Code version could still change the layout in
+  a way neither lookup recognizes, in which case `/optimus-stats` degrades
+  to "no data" rather than crashing, but that would look the same as "no
+  data yet" rather than raising a clear error. If stats stop showing up
+  after a Claude Code update, this is the first place to look.
 - **Pricing figures are a point-in-time snapshot** printed directly in
   `/optimus-stats` output, dated, specifically so a stale number is visible
   rather than silently wrong. Verify at anthropic.com/pricing before relying

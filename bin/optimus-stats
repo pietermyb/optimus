@@ -74,12 +74,146 @@ function costFor(model, u) {
   );
 }
 
-// Empirically observed slug format: cwd with path separators replaced by
-// dashes (e.g. /private/tmp/x/y -> -private-tmp-x-y). Undocumented,
-// Claude-Code-internal, not a stable public API — if a future version
-// changes this layout, this lookup needs updating (see README).
+// Empirically observed slug format: cwd with EVERY non-alphanumeric
+// character replaced by a dash (e.g. /Users/x.y@z/a_b -> -Users-x-y-z-a-b).
+// Case is preserved. Undocumented, Claude-Code-internal, not a stable
+// public API — if a future version changes this layout, this lookup needs
+// updating (see README). NOT verified: whether Claude Code collapses a run
+// of consecutive non-alphanumeric characters into a single dash, or emits
+// one dash per character as this does — no observed real project path has
+// had two separator characters in a row. Because this is a guess at an
+// undocumented format, `resolveProjectDir` below treats it as a fast path
+// only and falls back to reading transcripts directly when it misses.
 function slugForCwd(cwd) {
-  return cwd.replace(/\//g, '-');
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+// Strips trailing slashes (but never collapses "/" itself) so a cwd with
+// or without a trailing separator compares equal.
+function normalizeCwd(cwd) {
+  if (typeof cwd !== 'string') return cwd;
+  return cwd.length > 1 ? cwd.replace(/\/+$/, '') : cwd;
+}
+
+// Reads at most `maxBytes` from the start of `filePath` and returns up to
+// `maxLines` complete lines from it. Deliberately does NOT read the whole
+// file — Claude Code transcripts can be large, and this is only ever used
+// to peek at a transcript's leading metadata (its `cwd` field), not to
+// account usage. Any I/O failure (missing file, permissions, etc.) is
+// swallowed and yields an empty array rather than throwing.
+function readFirstLines(filePath, maxLines, maxBytes) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+  } catch (e) {
+    return [];
+  }
+  try {
+    const buf = Buffer.alloc(maxBytes);
+    let bytesRead = 0;
+    try {
+      bytesRead = fs.readSync(fd, buf, 0, maxBytes, 0);
+    } catch (e) {
+      return [];
+    }
+    const text = buf.toString('utf8', 0, bytesRead);
+    const lines = text.split('\n');
+    // The buffer may have been filled mid-line; drop the last (possibly
+    // truncated) line in that case so we never try to parse a partial one.
+    if (bytesRead === maxBytes) lines.pop();
+    return lines.slice(0, maxLines);
+  } catch (e) {
+    return [];
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+// Resolves the on-disk transcript directory for `cwd` under `projectsRoot`.
+//
+// This talks to two layers, in order, because the slug format above is a
+// reverse-engineered guess at an undocumented layout:
+//
+//  1. Fast path: assume the guessed slug is right and check whether that
+//     directory exists.
+//  2. Fallback: every Claude Code transcript line carries a top-level
+//     `cwd` field with the real project path. If the fast path misses
+//     (wrong guess, or a future layout change), scan each subdirectory of
+//     projectsRoot, peek at the first few lines of its first `.jsonl`
+//     file, and match on that field directly instead of on the directory
+//     name at all.
+//
+// Returns null if nothing matches. Every fs/JSON operation here is
+// wrapped so an unreadable directory, an empty directory, a missing
+// `.jsonl` file, or a malformed JSON line is skipped rather than thrown.
+function resolveProjectDir(cwd, projectsRoot) {
+  const target = normalizeCwd(cwd);
+
+  const fastPath = path.join(projectsRoot, slugForCwd(target));
+  try {
+    if (fs.existsSync(fastPath) && fs.statSync(fastPath).isDirectory()) return fastPath;
+  } catch (e) {
+    // fall through to the transcript-scanning fallback
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
+  } catch (e) {
+    return null; // projectsRoot itself doesn't exist/isn't readable yet
+  }
+
+  const subdirs = entries
+    .filter((e) => {
+      try {
+        return e.isDirectory();
+      } catch (err) {
+        return false;
+      }
+    })
+    .map((e) => e.name)
+    .sort();
+
+  for (const name of subdirs) {
+    const dirPath = path.join(projectsRoot, name);
+    let files = [];
+    try {
+      files = fs
+        .readdirSync(dirPath, { withFileTypes: true })
+        .filter((e) => {
+          try {
+            return e.isFile() && e.name.endsWith('.jsonl');
+          } catch (err) {
+            return false;
+          }
+        })
+        .map((e) => e.name)
+        .sort();
+    } catch (e) {
+      continue; // unreadable directory — skip it
+    }
+    if (files.length === 0) continue;
+
+    const firstTranscript = path.join(dirPath, files[0]);
+    const lines = readFirstLines(firstTranscript, 5, 8192);
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      let rec;
+      try {
+        rec = JSON.parse(t);
+      } catch (e) {
+        continue; // malformed/half-written line — skip it, don't throw
+      }
+      if (rec && typeof rec.cwd === 'string' && rec.cwd === target) return dirPath;
+    }
+  }
+
+  return null;
 }
 
 function readAssistantUsage(filePath, byModel) {
@@ -161,20 +295,23 @@ function printUsageTable(title, byModel) {
 
 function main() {
   const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const slug = slugForCwd(cwd);
-  const projectDir = path.join(os.homedir(), '.claude', 'projects', slug);
+  const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const projectsRoot = path.join(claudeConfigDir, 'projects');
+  const projectDir = resolveProjectDir(cwd, projectsRoot);
 
   console.log('Optimus stats for ' + cwd);
   console.log('');
 
-  if (!fs.existsSync(projectDir)) {
+  if (!projectDir) {
     console.log('No Optimus usage data yet for this project.');
     console.log(
-      '(Looked for ' +
-        projectDir +
-        " — nothing there yet. This uses Claude Code's undocumented project-slug " +
-        'layout [cwd path separators -> dashes]; if a future Claude Code version changes that ' +
-        'layout, this lookup will need updating.)'
+      '(Looked for a directory under ' +
+        projectsRoot +
+        " matching Claude Code's undocumented project-slug layout [every " +
+        'non-alphanumeric character in the cwd -> dash], and — as a fallback — for any project ' +
+        "directory whose transcript's own recorded `cwd` field matches this project exactly. " +
+        'Neither found anything. If a future Claude Code version changes this layout, this ' +
+        'lookup will need updating.)'
     );
     process.exit(0);
   }

@@ -143,14 +143,20 @@ an env var also documented for Cursor (see Section 5, Unknown 2, and the env-var
 Cursor research). `status` prints the config file path, activation state, and kill-switch state.
 
 `bin/optimus-stats` is the implementation behind `/optimus-stats`. It reads Claude Code's own
-transcript files directly (there is no documented API for this): `~/.claude/projects/<slug>/`,
-where `slug` is `cwd` with `/` replaced by `-` (`bin/optimus-stats:81-83`, explicitly called
-"empirically observed... undocumented"). It walks every `*.jsonl` session file for orchestrator
-usage, and separately walks `<session-dir>/subagents/agent-<id>.jsonl` for delegated usage, summing
-every `type:"assistant"` line's `usage` object rather than trusting the parent's `Agent`
-tool-result rollup (which the file's header comment notes only reflects the subagent's *last*
-turn). It prints a pricing table with a snapshot date (`PRICING_SNAPSHOT_DATE = '2026-06-24'`) and
-computes an **estimated** saving versus a hypothetical all-opus run. Both scripts are exposed on
+transcript files directly (there is no documented API for this): `<config dir>/projects/<slug>/`,
+where `<config dir>` is `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`, and `slug` is `cwd` with
+every non-alphanumeric character replaced by `-` (`bin/optimus-stats:87-89`, explicitly called
+"empirically observed... undocumented"). Because that slug is a guess at an undocumented format,
+resolution goes through `resolveProjectDir` (`bin/optimus-stats:153-217`): it tries the slug path
+first, and if that directory doesn't exist, falls back to scanning each project directory's own
+transcripts for a top-level `cwd` field that matches exactly — so a wrong slug guess doesn't
+produce a false "no data" result. Once the directory is resolved, it walks every `*.jsonl` session
+file for orchestrator usage, and separately walks `<session-dir>/subagents/agent-<id>.jsonl` for
+delegated usage, summing every `type:"assistant"` line's `usage` object rather than trusting the
+parent's `Agent` tool-result rollup (which the file's header comment notes only reflects the
+subagent's *last* turn). It prints a pricing table with a snapshot date
+(`PRICING_SNAPSHOT_DATE = '2026-06-24'`) and computes an **estimated** saving versus a hypothetical
+all-opus run. Both scripts are exposed on
 `PATH` via the plugin's `bin/` directory rather than through `${CLAUDE_PLUGIN_ROOT}` — the README
 documents (with a specific historical incident) that `CLAUDE_PLUGIN_ROOT` is not set inside a slash
 command's own `!`-prefixed bash execution, only inside `hooks/hooks.json` command strings.
