@@ -125,6 +125,17 @@ t('modelConditional on: expensive session model still enforces', () => {
 t('modelConditional on with no session model still enforces', () => {
   assert.strictEqual(d({ tool: 'Read', sessionModel: null, config: { enabled: true, modelConditional: true } }).allow, false);
 });
+t('modelConditional on: a cheap session model does NOT waive the dispatch rule', () => {
+  const cfg = { enabled: true, modelConditional: true };
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'claude-opus-5' }, sessionModel: 'claude-haiku-4-5', config: cfg }).reason, REASON.EXPENSIVE_MODEL_DISPATCH);
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: {}, sessionModel: 'claude-haiku-4-5', config: cfg }).reason, REASON.NO_MODEL_SET);
+});
+t('modelConditional on: a cheap session model still allows a cheap dispatch', () => {
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'haiku' }, sessionModel: 'claude-haiku-4-5', config: { enabled: true, modelConditional: true } }).allow, true);
+});
+t('modelConditional on: a cheap session model still exempts the shell speed bump', () => {
+  assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'cat work.txt' }, sessionModel: 'claude-haiku-4-5', config: { enabled: true, modelConditional: true } }).allow, true);
+});
 
 // --- ledger event mapping ----------------------------------------------
 t('allowed dispatch maps to dispatch_allowed with model and agent_type', () => {

@@ -18,17 +18,23 @@
  * exact per-call attribution with no race against parallel subagents,
  * because every payload carries its own originating conversation.
  *
- * One marker FILE per outstanding subagent — filename is the subagent's
- * id, contents are the parent's conversation id. Never one shared JSON
+ * One marker FILE per outstanding subagent — filename is keyed on the
+ * subagent's own conversation_id (see the key-selection comment in
+ * hooks/optimus-subagent-cursor.js for the exact fallback chain),
+ * contents are the parent's conversation id. Never one shared JSON
  * document: that would need read-modify-write, reopening exactly the
  * concurrency race hooks/optimus-ledger.js's append-only design avoids.
  * Two writers never touch the same path here.
  *
  * The filename is only a unique key so subagentStop can clear the right
- * entry. It is deliberately NOT treated as the subagent's conversation
- * id: the probe showed subagentStart.subagent_id is the parent's
- * tool_use_id for the Task call, and the subagent's own conversation id
- * is not knowable until its first tool call.
+ * entry; markActive()/clearActive() below never interpret it as data.
+ * conversation_id is used for it because the probe confirms it is
+ * present, and identical, on both subagentStart and subagentStop for a
+ * given subagent. subagentStart.subagent_id was rejected for this role:
+ * the probe only ever observed it on subagentStart — it is the parent's
+ * tool_use_id for the Task call, not the subagent's own id — and a
+ * successful subagentStop's raw payload was never captured, so whether
+ * it repeats that value there is unverified.
  *
  * Never throws. parentConversations() sits on the gate's hot path.
  */

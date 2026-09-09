@@ -25,8 +25,11 @@
  *      are allowed unconditionally. Getting this wrong blocks every
  *      worker Optimus dispatches and inverts the point of the plugin.
  *   2. Per-project activation.
- *   3. Optional model-conditional exemption (off by default).
- *   4. Dispatch must name a non-expensive model.
+ *   3. Dispatch must name a non-expensive model.
+ *   4. Optional model-conditional exemption (off by default) — waives
+ *      only the two checks below it (work tools, shell speed bump),
+ *      never the dispatch-model rule above it. See the comment on that
+ *      block for why.
  *   5. Work tools denied.
  *   6. Shell read-bypass speed bump (explicitly NOT a security
  *      boundary — see README).
@@ -144,20 +147,13 @@ function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
   // 2 — per-project activation.
   if (!cfg.enabled) return ALLOW;
 
-  // 3 — optional model-conditional exemption. Off unless a project opts
-  // in, so both hosts enforce on the same (role-based) basis by default.
-  // A missing/unknown sessionModel deliberately enforces rather than
-  // exempts: "we could not tell" must not become "you are exempt".
-  if (
-    cfg.modelConditional &&
-    typeof sessionModel === 'string' &&
-    sessionModel.trim() !== '' &&
-    !EXPENSIVE_MODEL_RE.test(sessionModel)
-  ) {
-    return ALLOW;
-  }
-
-  // 4 — dispatch must name a model, and it must not be the expensive tier.
+  // 3 — dispatch must name a model, and it must not be the expensive tier.
+  // Runs BEFORE the model-conditional exemption below, and must always:
+  // the dispatch rule exists to stop expensive tokens being burned in the
+  // *subagent*, which is orthogonal to what the orchestrator itself is
+  // running on. A cheap orchestrator dispatching an expensive model is
+  // exactly the waste Optimus exists to prevent, so no exemption keyed on
+  // the orchestrator's own role or model may waive it.
   if (tool === AGENT_DISPATCH) {
     const model = input.model;
     if (typeof model !== 'string' || model.trim() === '') {
@@ -166,6 +162,25 @@ function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
     if (EXPENSIVE_MODEL_RE.test(model)) {
       return { allow: false, reason: REASON.EXPENSIVE_MODEL_DISPATCH, model: model };
     }
+    return ALLOW;
+  }
+
+  // 4 — optional model-conditional exemption. Off unless a project opts
+  // in, so both hosts enforce on the same (role-based) basis by default.
+  // A missing/unknown sessionModel deliberately enforces rather than
+  // exempts: "we could not tell" must not become "you are exempt".
+  //
+  // Placed AFTER the dispatch-model check above, not before it: this
+  // exemption only ever reaches the two checks below it (work tools, the
+  // shell speed bump). It must never be able to waive the dispatch rule
+  // — see the comment on step 3 for why that guarantee has to hold
+  // regardless of what model the orchestrator is running on.
+  if (
+    cfg.modelConditional &&
+    typeof sessionModel === 'string' &&
+    sessionModel.trim() !== '' &&
+    !EXPENSIVE_MODEL_RE.test(sessionModel)
+  ) {
     return ALLOW;
   }
 

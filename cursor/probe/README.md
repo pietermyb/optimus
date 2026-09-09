@@ -62,8 +62,10 @@ Pass A — `<scratch>/.cursor/hooks.json`:
 
 Pass B — same, with `${PLUGIN_ROOT}`.
 
-After each pass: reload the window, trigger any tool call, then check
-`probe-root.log`. If the file does not exist, the process never started —
+After each pass: save the file and allow a couple of seconds to settle (no
+window reload is needed — Cursor watches `hooks.json` and reloads on
+write), trigger any tool call, then check `probe-root.log`. If the file
+does not exist, the process never started —
 that is itself the finding for that variable. Also check Cursor's own
 hook-error surface (output panel / notifications) and record whatever it
 says verbatim.

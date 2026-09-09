@@ -44,11 +44,21 @@ function main(raw) {
   }
   if (!cfg.enabled) return done();
 
-  // subagent_id is the parent's tool_use_id for the Task call, and equals
-  // tool_call_id. Either serves as the unique marker key; fall back
-  // through them so a renamed field degrades to a still-unique key rather
-  // than to no marker at all.
-  const id = payload.subagent_id || payload.tool_call_id || payload.generation_id;
+  // conversation_id is the marker's KEY (it identifies the subagent
+  // itself) — do not confuse it with parentConversationId below, which is
+  // the marker's VALUE (it identifies the subagent's dispatcher).
+  //
+  // conversation_id is the one field docs/cursor-probe-findings.md
+  // confirms is present on every hook event, subagentStart and
+  // subagentStop alike, and that identifies the same subagent on both.
+  // subagent_id was rejected for this role: the probe only ever observed
+  // it on subagentStart, where it is the parent's tool_use_id for the
+  // Task call (not the subagent's own id), and a successful
+  // subagentStop's raw payload was never captured, so whether it repeats
+  // that same value there is an unverified assumption, not a confirmed
+  // fact. Fall back through the rest so a renamed/missing field still
+  // degrades to a still-unique key rather than to no marker at all.
+  const id = payload.conversation_id || payload.subagent_id || payload.tool_call_id || payload.generation_id;
 
   if (payload.hook_event_name === 'subagentStart') {
     markActive(payload.cwd, id, payload.parent_conversation_id);

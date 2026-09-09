@@ -123,16 +123,42 @@ if echo "$out" | grep -q '"permission":"allow"'; then
 else
   echo "FAIL: subagentStart did not emit allow -- $out"; fail=$((fail+1))
 fi
-if [ "$(cat "$DIR/tooluse-9" 2>/dev/null)" == "conv-main" ]; then
+if [ "$(cat "$DIR/conv-sub" 2>/dev/null)" == "conv-main" ]; then
   echo "PASS: subagentStart recorded the parent conversation"; pass=$((pass+1))
 else
   echo "FAIL: marker missing or wrong -- $(ls -1 "$DIR" 2>/dev/null)"; fail=$((fail+1))
 fi
 stop_payload | node "$HOOK" >/dev/null
-if [ ! -e "$DIR/tooluse-9" ]; then
+if [ ! -e "$DIR/conv-sub" ]; then
   echo "PASS: subagentStop cleared the marker"; pass=$((pass+1))
 else
   echo "FAIL: subagentStop left the marker behind"; fail=$((fail+1))
+fi
+
+echo ""
+echo "-- the marker is keyed on conversation_id, not subagent_id --"
+key_start_payload() {
+  printf '{"hook_event_name":"subagentStart","conversation_id":"conv-key-test","parent_conversation_id":"conv-main","subagent_id":"different-subagent-id-999","tool_call_id":"different-subagent-id-999","cwd":"%s"}' "$PROJECT"
+}
+key_stop_payload() {
+  printf '{"hook_event_name":"subagentStop","conversation_id":"conv-key-test","cwd":"%s"}' "$PROJECT"
+}
+key_start_payload | node "$HOOK" >/dev/null
+if [ "$(cat "$DIR/conv-key-test" 2>/dev/null)" == "conv-main" ]; then
+  echo "PASS: marker filename is the subagent's conversation_id"; pass=$((pass+1))
+else
+  echo "FAIL: marker not keyed on conversation_id -- $(ls -1 "$DIR" 2>/dev/null)"; fail=$((fail+1))
+fi
+if [ -e "$DIR/different-subagent-id-999" ]; then
+  echo "FAIL: a marker was also (or instead) keyed on subagent_id"; fail=$((fail+1))
+else
+  echo "PASS: no marker keyed on subagent_id"; pass=$((pass+1))
+fi
+key_stop_payload | node "$HOOK" >/dev/null
+if [ ! -e "$DIR/conv-key-test" ]; then
+  echo "PASS: a subagentStop carrying only conversation_id cleared the marker"; pass=$((pass+1))
+else
+  echo "FAIL: marker survived a conversation_id-only subagentStop"; fail=$((fail+1))
 fi
 
 echo ""
@@ -147,14 +173,14 @@ echo ""
 echo "-- inactive project and kill switch write nothing --"
 CLAUDE_PROJECT_DIR="$PROJECT" node "$ROOT/bin/optimus-cli" off >/dev/null
 start_payload | node "$HOOK" >/dev/null
-if [ ! -e "$DIR/tooluse-9" ]; then
+if [ ! -e "$DIR/conv-sub" ]; then
   echo "PASS: inactive project writes no marker"; pass=$((pass+1))
 else
   echo "FAIL: wrote a marker while inactive"; fail=$((fail+1))
 fi
 CLAUDE_PROJECT_DIR="$PROJECT" node "$ROOT/bin/optimus-cli" on >/dev/null
 start_payload | OPTIMUS_DISABLED=1 node "$HOOK" >/dev/null
-if [ ! -e "$DIR/tooluse-9" ]; then
+if [ ! -e "$DIR/conv-sub" ]; then
   echo "PASS: kill switch writes no marker"; pass=$((pass+1))
 else
   echo "FAIL: wrote a marker with the kill switch on"; fail=$((fail+1))
