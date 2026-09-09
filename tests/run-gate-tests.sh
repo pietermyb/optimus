@@ -39,6 +39,20 @@ check() {
   fi
 }
 
+check_msg() {
+  local name="$1" fixture="$2" cwd="$3" needle="$4"
+  local payload out
+  payload="$(sed "s#__PROJECT__#$cwd#" "$FIXTURES/$fixture")"
+  out="$(node "$GATE" <<<"$payload")"
+  if echo "$out" | grep -qF "$needle"; then
+    echo "PASS: $name"
+    pass=$((pass+1))
+  else
+    echo "FAIL: $name (message did not contain: $needle) -- output: $out"
+    fail=$((fail+1))
+  fi
+}
+
 echo "== Optimus gate tests =="
 echo "-- with Optimus NOT activated: everything should allow --"
 check "inactive: main Read allowed"        allow main-read.json        "$PROJECT"
@@ -57,6 +71,19 @@ check "active: Agent model=opus DENIED"           deny  agent-opus-model.json "$
 check "active: Agent model=haiku ALLOWED"         allow agent-haiku-model.json "$PROJECT"
 check "active: Bash git status ALLOWED"           allow main-bash-git.json   "$PROJECT"
 check "active: Bash cat work.txt DENIED (best-effort)" deny main-bash-cat.json "$PROJECT"
+
+echo ""
+echo "-- deny message wording (guards user-facing text against refactors) --"
+check_msg "msg: work tool names the tool and the Agent tool" main-read.json "$PROJECT" \
+  'the Read tool is blocked in the orchestrator session'
+check_msg "msg: work tool points at /optimus off" main-read.json "$PROJECT" \
+  'Run `/optimus off` if you'
+check_msg "msg: no-model names tool_input.model" agent-no-model.json "$PROJECT" \
+  'has no tool_input.model set'
+check_msg "msg: opus dispatch echoes the model back" agent-opus-model.json "$PROJECT" \
+  'the expensive tier'
+check_msg "msg: bash nudge says best-effort, not a boundary" main-bash-cat.json "$PROJECT" \
+  'best-effort'
 
 echo ""
 echo "-- kill switch: OPTIMUS_DISABLED=1 forces allow even though active --"

@@ -2,70 +2,94 @@
 'use strict';
 
 /**
- * PreToolUse hook — the actual enforcement point.
+ * Claude Code PreToolUse adapter.
  *
- * Order of checks matters and is deliberate:
- *   0. Kill switch (OPTIMUS_DISABLED) — always first, always wins.
- *   1. Subagent exemption — MUST come before anything else. A payload
- *      carrying `agent_id`/`agent_type` originates inside a dispatched
- *      subagent, not the orchestrator, and is allowed unconditionally.
- *      Getting this order wrong blocks every worker Optimus dispatches
- *      and inverts the entire point of the plugin. See README + the
- *      research notes this was built from for why session_id cannot be
- *      used for this instead (it's identical for main session and every
- *      subagent it spawns).
- *   2. Per-project activation — if Optimus isn't turned on for this
- *      project (`/optimus on`), every call is allowed.
- *   3. Agent dispatch must name a non-expensive model.
- *   4. Work tools (Read/Edit/Write/Grep/Glob/WebFetch/WebSearch/NotebookEdit)
- *      are denied in the main session.
- *   5. Bash: best-effort pattern match against obvious read-as-bypass
- *      commands. This is explicitly NOT a security boundary — see README.
+ * This file is deliberately thin. It knows exactly three things:
+ *   - how to read Claude Code's PreToolUse stdin payload
+ *   - how to translate Claude Code's tool names into the core's
+ *     normalized vocabulary
+ *   - how to emit Claude Code's hookSpecificOutput JSON
+ * Every actual policy question — which tools are work tools, what makes
+ * a model expensive, which shell commands are reads in disguise, the
+ * order the checks run in, what gets written to the ledger — lives in
+ * hooks/optimus-core.js and is shared with the Cursor adapter.
  *
- * Fails OPEN on any internal error (malformed payload, config read
- * failure, etc.) — a bug in this hook must never wedge a session.
+ * Preserved from the pre-extraction version, all load-bearing:
+ *   - The kill switch (OPTIMUS_DISABLED) is checked first and always wins.
+ *   - The subagent exemption (agent_id/agent_type) short-circuits BEFORE
+ *     any config read. session_id cannot be used for this — it is
+ *     identical for the main session and every subagent it spawns.
+ *   - Fails OPEN on any internal error (malformed payload, config read
+ *     failure, uncaught throw): a bug in this hook must never wedge a
+ *     session.
+ *   - The user-facing deny wording is unchanged, byte for byte, and is
+ *     pinned by check_msg assertions in tests/run-gate-tests.sh.
  */
 
 const path = require('path');
-const {
-  isKillSwitchActive,
-  getConfig,
-  WORK_TOOLS,
-  EXPENSIVE_MODEL_RE,
-} = require(path.join(__dirname, 'optimus-config.js'));
+const { isKillSwitchActive, getConfig } = require(
+  path.join(__dirname, 'optimus-config.js')
+);
 const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
+const {
+  decide,
+  ledgerEventFor,
+  AGENT_DISPATCH,
+  SHELL,
+  REASON,
+} = require(path.join(__dirname, 'optimus-core.js'));
 
-/** Max length of the cmd_head field logged for a Bash nudge. */
-const CMD_HEAD_MAX_LEN = 32;
-
-/**
- * Reduces a shell command down to a privacy-safe fragment for the ledger:
- * the first whitespace-delimited token, stripped to word characters only,
- * truncated to CMD_HEAD_MAX_LEN. The full command is never passed to the
- * ledger — only this.
- */
-function cmdHead(command) {
-  const first = String(command || '').trim().split(/\s+/)[0] || '';
-  return first.replace(/[^\w]/g, '').slice(0, CMD_HEAD_MAX_LEN);
+/** Claude Code tool name -> normalized core vocabulary. */
+function normalizeTool(toolName) {
+  if (toolName === 'Agent') return AGENT_DISPATCH;
+  if (toolName === 'Bash') return SHELL;
+  return toolName;
 }
 
-// Best-effort patterns for "this Bash command is really just a file read/search,
-// dressed up to dodge the Read/Grep/etc. denial". Deliberately narrow and
-// conservative — false negatives are expected and accepted (see README);
-// the goal is raising the cost of the *casual, unprompted* bypass observed
-// during testing (a model's first instinct for "read a file" was `cat`),
-// not building a wall.
-const BASH_READ_PATTERNS = [
-  /^\s*cat\s+[^|>&;`$]+$/,
-  /^\s*head\s+/,
-  /^\s*tail\s+/,
-  /^\s*(rg|grep)\s+(?!.*(--help|--version))[^|>&;`$]*$/,
-  /^\s*find\s+\S+\s+.*-name\s/,
-  /^\s*ls\s+/,
-  /^\s*less\s+/,
-  /^\s*more\s+\S/,
-  /^\s*sed\s+-n\s/,
-];
+/** Renders the Claude-Code-specific deny text for a core reason code. */
+function denyMessage(decision, payload) {
+  const toolInput = payload.tool_input || {};
+  switch (decision.reason) {
+    case REASON.NO_MODEL_SET:
+      return (
+        'Optimus: this Agent dispatch has no tool_input.model set, which means it would ' +
+        "silently inherit the orchestrator's own (expensive) model instead of running cheaper. " +
+        'Re-dispatch and pass model explicitly: use "haiku" for simple/mechanical work ' +
+        '(file lookups, boilerplate edits, running a command and reporting its output), ' +
+        'or "sonnet" for anything that needs real judgement (ambiguous requirements, design ' +
+        'tradeoffs, non-trivial debugging). Never omit model, and never dispatch on opus.'
+      );
+    case REASON.EXPENSIVE_MODEL_DISPATCH:
+      return (
+        'Optimus: this Agent dispatch names model="' +
+        decision.model +
+        '", the expensive tier — dispatching a subagent on the same expensive model as the ' +
+        'orchestrator defeats the point of delegating. Re-dispatch with model="haiku" for ' +
+        'simple/mechanical work, or model="sonnet" for anything needing real judgement.'
+      );
+    case REASON.WORK_TOOL_IN_ORCHESTRATOR:
+      return (
+        'Optimus: the ' +
+        decision.tool +
+        ' tool is blocked in the orchestrator session while Optimus is active for this project. ' +
+        'Delegate this work with the Agent tool instead: pass model="haiku" for simple/mechanical ' +
+        'work, or model="sonnet" for anything needing real judgement. Run `/optimus off` if you ' +
+        'need to work in this session directly.'
+      );
+    case REASON.SHELL_READ_BYPASS:
+      return (
+        'Optimus: this Bash command ("' +
+        String(toolInput.command || '').slice(0, 160) +
+        '") looks like a plain file read or search, which should go through a delegated ' +
+        'subagent instead of the orchestrator running it directly. Use the Agent tool ' +
+        '(model="haiku" is usually enough for a simple lookup). Note: this is a best-effort ' +
+        'pattern match, not a hard boundary — git/build/test/flash and other orchestration ' +
+        'commands are never blocked.'
+      );
+    default:
+      return 'Optimus: blocked.';
+  }
+}
 
 function allow() {
   process.exit(0);
@@ -95,13 +119,9 @@ function main(raw) {
   }
   if (!payload || typeof payload !== 'object') return allow();
 
-  // Rule 1 — subagent exemption. Load-bearing; must stay first.
-  if (payload.agent_id || payload.agent_type) {
-    return allow();
-  }
-
-  const toolName = payload.tool_name;
-  const toolInput = payload.tool_input || {};
+  // Subagent exemption. Short-circuits before any config I/O, and must
+  // stay first — see the header comment.
+  if (payload.agent_id || payload.agent_type) return allow();
 
   let cfg;
   try {
@@ -111,93 +131,32 @@ function main(raw) {
   }
   if (!cfg.enabled) return allow();
 
-  // Rule 3 — Agent dispatch must name a model, and it must not be the expensive tier.
-  if (toolName === 'Agent') {
-    const model = toolInput.model;
-    if (typeof model !== 'string' || model.trim() === '') {
-      recordEvent(payload.cwd, {
-        ev: 'dispatch_denied',
-        session_id: payload.session_id,
-        tool_use_id: payload.tool_use_id,
-        reason: 'no_model',
-      });
-      return deny(
-        'Optimus: this Agent dispatch has no tool_input.model set, which means it would ' +
-          "silently inherit the orchestrator's own (expensive) model instead of running cheaper. " +
-          'Re-dispatch and pass model explicitly: use "haiku" for simple/mechanical work ' +
-          '(file lookups, boilerplate edits, running a command and reporting its output), ' +
-          'or "sonnet" for anything that needs real judgement (ambiguous requirements, design ' +
-          'tradeoffs, non-trivial debugging). Never omit model, and never dispatch on opus.'
-      );
-    }
-    if (EXPENSIVE_MODEL_RE.test(model)) {
-      recordEvent(payload.cwd, {
-        ev: 'dispatch_denied',
-        session_id: payload.session_id,
-        tool_use_id: payload.tool_use_id,
-        reason: 'expensive_model',
-        model: model,
-      });
-      return deny(
-        'Optimus: this Agent dispatch names model="' +
-          model +
-          '", the expensive tier — dispatching a subagent on the same expensive model as the ' +
-          'orchestrator defeats the point of delegating. Re-dispatch with model="haiku" for ' +
-          'simple/mechanical work, or model="sonnet" for anything needing real judgement.'
-      );
-    }
-    recordEvent(payload.cwd, {
-      ev: 'dispatch_allowed',
-      session_id: payload.session_id,
-      tool_use_id: payload.tool_use_id,
-      model: model,
-      agent_type: toolInput.subagent_type,
-    });
-    return allow();
-  }
+  const tool = normalizeTool(payload.tool_name);
+  const toolInput = payload.tool_input || {};
 
-  // Rule 4 — work tools denied in the main session while Optimus is active.
-  if (WORK_TOOLS.has(toolName)) {
-    recordEvent(payload.cwd, {
-      ev: 'work_tool_denied',
-      session_id: payload.session_id,
-      tool: toolName,
-    });
-    return deny(
-      'Optimus: the ' +
-        toolName +
-        ' tool is blocked in the orchestrator session while Optimus is active for this project. ' +
-        'Delegate this work with the Agent tool instead: pass model="haiku" for simple/mechanical ' +
-        'work, or model="sonnet" for anything needing real judgement. Run `/optimus off` if you ' +
-        'need to work in this session directly.'
+  // Claude Code payloads carry no model field, and the one indirect
+  // route (polling the transcript) races this hook's own invocation —
+  // see README "Known limitations". Always null here.
+  const decision = decide({
+    tool: tool,
+    toolInput: toolInput,
+    isSubagent: false,
+    sessionModel: null,
+    config: cfg.raw && cfg.raw.modelConditional
+      ? { enabled: true, modelConditional: true }
+      : { enabled: true },
+  });
+
+  const event = ledgerEventFor({ tool: tool, toolInput: toolInput, decision: decision });
+  if (event) {
+    recordEvent(
+      payload.cwd,
+      Object.assign({ session_id: payload.session_id, tool_use_id: payload.tool_use_id }, event)
     );
   }
 
-  // Rule 5 — Bash: best-effort speed bump only, not a security boundary.
-  if (toolName === 'Bash') {
-    const command = typeof toolInput.command === 'string' ? toolInput.command : '';
-    for (const pattern of BASH_READ_PATTERNS) {
-      if (pattern.test(command)) {
-        recordEvent(payload.cwd, {
-          ev: 'bash_nudge',
-          session_id: payload.session_id,
-          cmd_head: cmdHead(command),
-        });
-        return deny(
-          'Optimus: this Bash command ("' +
-            command.slice(0, 160) +
-            '") looks like a plain file read or search, which should go through a delegated ' +
-            'subagent instead of the orchestrator running it directly. Use the Agent tool ' +
-            '(model="haiku" is usually enough for a simple lookup). Note: this is a best-effort ' +
-            'pattern match, not a hard boundary — git/build/test/flash and other orchestration ' +
-            'commands are never blocked.'
-        );
-      }
-    }
-    return allow();
-  }
-
-  return allow();
+  if (decision.allow) return allow();
+  return deny(denyMessage(decision, payload));
 }
 
 let raw = '';
