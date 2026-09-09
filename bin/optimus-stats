@@ -27,6 +27,12 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { findProjectRoot, CONFIG_DIRNAME } = require(
+  path.join(__dirname, '..', 'hooks', 'optimus-config.js')
+);
+const { STATE_DIRNAME, LEDGER_FILENAME } = require(
+  path.join(__dirname, '..', 'hooks', 'optimus-ledger.js')
+);
 
 // Pricing snapshot used during Optimus's research (see README "Known
 // limitations" for sourcing). ESTIMATES — verify current numbers at
@@ -293,6 +299,264 @@ function printUsageTable(title, byModel) {
   return totalCost;
 }
 
+// ---------------------------------------------------------------------------
+// Enforcement ledger reporting.
+//
+// Reads the append-only ledger hooks/optimus-ledger.js writes under
+// `<project root>/.optimus/state/` and reports what Optimus's gate actually
+// did — dispatch allow/deny counts, work-tool denials, Bash nudges — plus
+// an approximate comparison between the model ALIAS a dispatch requested
+// (what the ledger records) and the ACTUAL resolved model id a subagent
+// transcript shows it ran on (what `dispatchesByModel` above already
+// computes from `firstModelIn`).
+//
+// Entirely independent of, and additive to, everything above: every
+// function here guards its own fs/JSON calls, so a missing, partial, or
+// corrupt ledger can never crash this script or change any line already
+// printed above it. If no ledger exists at all — a project that predates
+// this feature, or one where Optimus has never recorded an enforcement
+// event — readLedgerEvents() returns null and main() omits this entire
+// section, leaving prior output byte-identical to before this feature
+// existed.
+
+/**
+ * Reduces a resolved-or-requested model string down to a coarse family
+ * bucket by substring match only: 'haiku' | 'sonnet' | 'opus' | 'other'.
+ * Deliberately NOT a table of exact alias -> model-id mappings — aliases
+ * move when models version (the same reason PRICING_SNAPSHOT_DATE above is
+ * dated rather than trusted forever), so a hardcoded mapping would go
+ * stale silently. Family-level comparison is the most that can be
+ * asserted without re-deriving that mapping on every release.
+ */
+function modelFamily(modelStr) {
+  if (typeof modelStr !== 'string') return 'other';
+  const s = modelStr.toLowerCase();
+  if (s.indexOf('haiku') !== -1) return 'haiku';
+  if (s.indexOf('sonnet') !== -1) return 'sonnet';
+  if (s.indexOf('opus') !== -1) return 'opus';
+  return 'other';
+}
+
+/** Collapses a per-exact-model-id count map (e.g. dispatchesByModel) into per-family counts. */
+function familyCountsFromModelTally(byModelCount) {
+  const fam = {};
+  for (const model of Object.keys(byModelCount || {})) {
+    fam[modelFamily(model)] = (fam[modelFamily(model)] || 0) + byModelCount[model];
+  }
+  return fam;
+}
+
+/**
+ * Appends every well-formed ledger record found in `filePath` onto `sink`.
+ * Silently skips a missing/unreadable file and any line that isn't valid
+ * JSON with a string `ev` field — same "never throw, skip malformed lines"
+ * convention as readAssistantUsage()/firstModelIn() above. Never throws.
+ */
+function readLedgerLines(filePath, sink) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (e) {
+    return;
+  }
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    let rec;
+    try {
+      rec = JSON.parse(t);
+    } catch (e) {
+      continue; // malformed/half-written line -- skip it, don't throw
+    }
+    if (rec && typeof rec === 'object' && typeof rec.ev === 'string') sink.push(rec);
+  }
+}
+
+/**
+ * Loads every event from the current project's ledger — `events.jsonl`
+ * plus a rotated `events.jsonl.1` generation if present (older generation
+ * read first, for a roughly chronological order; callers only ever
+ * aggregate counts, so order otherwise doesn't matter).
+ *
+ * `root` is resolved via findProjectRoot() (from optimus-config.js) on the
+ * same `cwd` this script already uses everywhere else — the repo-local
+ * walk-up that hooks/optimus-gate.js and hooks/optimus-ledger.js use to
+ * find `.optimus/config.json`, which is a completely different resolution
+ * mechanism than resolveProjectDir() above (that one locates Claude Code's
+ * own transcript directory under `~/.claude/projects/<slug>`). The two are
+ * independent on purpose: the ledger lives inside the project's own repo,
+ * not under Claude Code's config directory.
+ *
+ * Returns null if neither ledger file exists — the caller's signal to
+ * omit the whole enforcement section for back-compat with projects that
+ * predate this feature (or simply haven't recorded an event yet). Returns
+ * `{ events, rotated }` otherwise, where `rotated` is true iff the rotated
+ * generation was found (feeds the approximate-comparison caveat below).
+ */
+function readLedgerEvents(root) {
+  if (!root) return null;
+  try {
+    const dir = path.join(root, CONFIG_DIRNAME, STATE_DIRNAME);
+    const mainFile = path.join(dir, LEDGER_FILENAME);
+    const rotatedFile = mainFile + '.1';
+
+    let mainExists = false;
+    let rotatedExists = false;
+    try {
+      mainExists = fs.statSync(mainFile).isFile();
+    } catch (e) {
+      mainExists = false;
+    }
+    try {
+      rotatedExists = fs.statSync(rotatedFile).isFile();
+    } catch (e) {
+      rotatedExists = false;
+    }
+
+    if (!mainExists && !rotatedExists) return null;
+
+    const events = [];
+    if (rotatedExists) readLedgerLines(rotatedFile, events);
+    if (mainExists) readLedgerLines(mainFile, events);
+    return { events: events, rotated: rotatedExists };
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Tallies raw ledger events into the counts the enforcement section reports. */
+function tallyLedgerEvents(events) {
+  const tally = {
+    dispatchAllowed: 0,
+    deniedByReason: {},
+    workToolDeniedByTool: {},
+    bashNudgeByCmdHead: {},
+    requestedFamily: {},
+  };
+  for (const rec of events) {
+    switch (rec.ev) {
+      case 'dispatch_allowed': {
+        tally.dispatchAllowed += 1;
+        const fam = modelFamily(rec.model);
+        tally.requestedFamily[fam] = (tally.requestedFamily[fam] || 0) + 1;
+        break;
+      }
+      case 'dispatch_denied': {
+        const reason = typeof rec.reason === 'string' ? rec.reason : 'unknown';
+        tally.deniedByReason[reason] = (tally.deniedByReason[reason] || 0) + 1;
+        break;
+      }
+      case 'work_tool_denied': {
+        const tool = typeof rec.tool === 'string' ? rec.tool : 'unknown';
+        tally.workToolDeniedByTool[tool] = (tally.workToolDeniedByTool[tool] || 0) + 1;
+        break;
+      }
+      case 'bash_nudge': {
+        const head = typeof rec.cmd_head === 'string' ? rec.cmd_head : 'unknown';
+        tally.bashNudgeByCmdHead[head] = (tally.bashNudgeByCmdHead[head] || 0) + 1;
+        break;
+      }
+      default:
+        break; // unknown/future event type -- ignore rather than miscount or crash
+    }
+  }
+  return tally;
+}
+
+/**
+ * Prints the "Enforcement ledger summary" and "Requested-vs-actual model
+ * family" blocks. See the comment above readLedgerEvents() for why the
+ * two sides of that comparison can legitimately disagree without any real
+ * drift having occurred (rotation losing history, transcripts pruned
+ * independently, only *allowed* dispatches ever reaching a transcript) —
+ * this function hedges accordingly rather than asserting drift as fact.
+ */
+function printLedgerSection(ledger, dispatchesByModel) {
+  const tally = tallyLedgerEvents(ledger.events);
+
+  console.log('Enforcement ledger summary (from .optimus/state/events.jsonl):');
+  console.log('  dispatches allowed         : ' + tally.dispatchAllowed);
+  console.log(
+    '  dispatches denied by reason: ' +
+      (Object.keys(tally.deniedByReason).length ? JSON.stringify(tally.deniedByReason) : '(none)')
+  );
+  console.log(
+    '  work-tool denials by tool  : ' +
+      (Object.keys(tally.workToolDeniedByTool).length
+        ? JSON.stringify(tally.workToolDeniedByTool)
+        : '(none)')
+  );
+  console.log(
+    '  bash nudges by cmd_head    : ' +
+      (Object.keys(tally.bashNudgeByCmdHead).length
+        ? JSON.stringify(tally.bashNudgeByCmdHead)
+        : '(none)')
+  );
+  console.log('');
+
+  const requestedFamily = tally.requestedFamily;
+  const actualFamily = familyCountsFromModelTally(dispatchesByModel);
+  const families = ['haiku', 'sonnet', 'opus', 'other'];
+
+  console.log(
+    'Requested-vs-actual model family (ledger-requested alias vs. transcript-resolved model, family-level only):'
+  );
+  let anyFamilyDiffers = false;
+  let requestedTotal = 0;
+  let actualTotal = 0;
+  for (const fam of families) {
+    const requested = requestedFamily[fam] || 0;
+    const actual = actualFamily[fam] || 0;
+    requestedTotal += requested;
+    actualTotal += actual;
+    const differs = requested !== actual;
+    if (differs) anyFamilyDiffers = true;
+    console.log(
+      '  ' +
+        fam.padEnd(6) +
+        ': requested=' +
+        requested +
+        ' actual=' +
+        actual +
+        (differs ? '  <- counts differ' : '')
+    );
+  }
+  console.log('');
+
+  if (anyFamilyDiffers) {
+    console.log(
+      'Model family check: requested and actual counts differ for at least one family -- counts ' +
+        'differ, which may be rotation/pruning rather than drift (see caveat below), not proof that a ' +
+        'different model actually ran than what was requested.'
+    );
+  } else {
+    console.log('Model family check: requested and actual counts match for every family -- no drift indicated.');
+  }
+
+  const totalsDiffer = requestedTotal !== actualTotal;
+  if (ledger.rotated || totalsDiffer) {
+    console.log('');
+    console.log(
+      'CAVEAT: this requested-vs-actual comparison is approximate, not proof of drift either way. The ' +
+        'ledger is cumulative and loses history when it rotates; transcripts can be pruned independently ' +
+        "of the ledger; and only *allowed* dispatches ever reach a transcript (a denied dispatch never " +
+        'ran, so it can never appear on the actual side).'
+    );
+    if (ledger.rotated) {
+      console.log('  A rotated events.jsonl.1 generation was included in these counts.');
+    }
+    if (totalsDiffer) {
+      console.log(
+        '  Requested and actual totals differ overall (' +
+          requestedTotal +
+          ' vs ' +
+          actualTotal +
+          ') -- counts differ, may be rotation/pruning rather than drift.'
+      );
+    }
+  }
+}
+
 function main() {
   const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -399,6 +663,12 @@ function main() {
   console.log('  by agent type: ' + (Object.keys(dispatchesByType).length ? JSON.stringify(dispatchesByType) : '(none)'));
   console.log('  by model run : ' + (Object.keys(dispatchesByModel).length ? JSON.stringify(dispatchesByModel) : '(none)'));
   console.log('');
+
+  const ledger = readLedgerEvents(findProjectRoot(cwd));
+  if (ledger) {
+    printLedgerSection(ledger, dispatchesByModel);
+    console.log('');
+  }
 
   const opusPricing = pricingFor('claude-opus-5');
   const delegatedModels = Object.keys(delegatedUsage);

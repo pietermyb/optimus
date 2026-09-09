@@ -40,6 +40,28 @@ write_garbage_line() {
   printf 'not valid json at all {{{\n' >>"$file"
 }
 
+# Writes a one-line synthetic subagent transcript at
+# "$1/agent-$2.jsonl" reporting $3 as the (actual, resolved) model of its
+# only assistant turn -- what optimus-stats' existing firstModelIn()/
+# dispatchesByModel accounting reads, independent of anything the ledger
+# recorded as the *requested* alias.
+write_subagent_transcript() {
+  local subdir="$1" agent_id="$2" model="$3"
+  mkdir -p "$subdir"
+  printf '{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
+    "$model" >"$subdir/agent-$agent_id.jsonl"
+}
+
+# Appends one raw ledger event line verbatim (caller supplies the full JSON
+# object as a string) to $1. Used to build synthetic
+# .optimus/state/events.jsonl / events.jsonl.1 fixtures directly, since
+# these tests exercise optimus-stats' *reader*, not optimus-ledger.js's
+# writer (that module already has its own dedicated, passing test suite).
+write_ledger_event() {
+  local file="$1" json="$2"
+  printf '%s\n' "$json" >>"$file"
+}
+
 run_stats() {
   local config_dir="$1" target_cwd="$2"
   CLAUDE_CONFIG_DIR="$config_dir" CLAUDE_PROJECT_DIR="$target_cwd" node "$STATS"
@@ -131,6 +153,212 @@ write_assistant_line "$TRANSCRIPT_E" "$CWD_E" "claude-sonnet-5" 999 88 3 4
 write_garbage_line "$TRANSCRIPT_E"
 write_assistant_line "$TRANSCRIPT_E" "$CWD_E" "claude-sonnet-5" 111 22 0 0
 check_contains "(e) malformed line among valid ones does not crash" "$CFG_E" "$CWD_E" "input=1110" "$NO_DATA"
+
+echo ""
+echo "== Optimus stats: enforcement ledger reporting =="
+
+# Every case below needs a *real* target-project directory (not just a
+# fabricated cwd string used purely for slug matching, as cases a-e above
+# use) because the ledger section resolves its own project root via
+# findProjectRoot() walking up from cwd looking for an actual
+# .optimus/config.json file on disk -- same helper hooks/optimus-config.js
+# and hooks/optimus-ledger.js already use. And every case (except the
+# "no ledger" one) also needs at least one real transcript, since the new
+# section is printed after the existing dispatch tallies in the script's
+# normal full-output path -- it is not reachable from the early "no data
+# yet" exits, which is a deliberate scope decision (see the write-up
+# accompanying this change).
+
+LEDGER_SECTION_MARKER="Enforcement ledger summary"
+
+# -- (f) mix of all four event types produces correct, real-number counts.
+CFG_F="$WORKDIR/cfg-ledger-mix"
+PROJ_F="$WORKDIR/ledger-mix-project"
+mkdir -p "$PROJ_F/.optimus/state"
+echo '{"enabled":true}' >"$PROJ_F/.optimus/config.json"
+mkdir -p "$CFG_F/projects"
+SLUG_F="$(correct_slug "$PROJ_F")"
+mkdir -p "$CFG_F/projects/$SLUG_F"
+write_assistant_line "$CFG_F/projects/$SLUG_F/session-f.jsonl" "$PROJ_F" "claude-sonnet-5" 100 50 0 0
+
+LEDGER_F="$PROJ_F/.optimus/state/events.jsonl"
+write_ledger_event "$LEDGER_F" '{"v":1,"ts":"2026-01-01T00:00:00.000Z","ev":"dispatch_allowed","session_id":"s1","tool_use_id":"t1","model":"haiku","agent_type":"general-purpose"}'
+write_ledger_event "$LEDGER_F" '{"v":1,"ts":"2026-01-01T00:00:01.000Z","ev":"dispatch_allowed","session_id":"s1","tool_use_id":"t2","model":"sonnet","agent_type":"general-purpose"}'
+write_ledger_event "$LEDGER_F" '{"v":1,"ts":"2026-01-01T00:00:02.000Z","ev":"dispatch_denied","session_id":"s1","tool_use_id":"t3","reason":"no_model"}'
+write_ledger_event "$LEDGER_F" '{"v":1,"ts":"2026-01-01T00:00:03.000Z","ev":"dispatch_denied","session_id":"s1","tool_use_id":"t4","reason":"expensive_model","model":"opus"}'
+write_ledger_event "$LEDGER_F" '{"v":1,"ts":"2026-01-01T00:00:04.000Z","ev":"work_tool_denied","session_id":"s1","tool":"Read"}'
+write_ledger_event "$LEDGER_F" '{"v":1,"ts":"2026-01-01T00:00:05.000Z","ev":"work_tool_denied","session_id":"s1","tool":"Read"}'
+write_ledger_event "$LEDGER_F" '{"v":1,"ts":"2026-01-01T00:00:06.000Z","ev":"bash_nudge","session_id":"s1","cmd_head":"cat"}'
+
+check_contains "(f) mix: dispatches allowed = 2"        "$CFG_F" "$PROJ_F" "dispatches allowed         : 2" ""
+check_contains "(f) mix: denied reason no_model = 1"     "$CFG_F" "$PROJ_F" '"no_model":1' ""
+check_contains "(f) mix: denied reason expensive_model=1" "$CFG_F" "$PROJ_F" '"expensive_model":1' ""
+check_contains "(f) mix: work-tool denied Read = 2"      "$CFG_F" "$PROJ_F" '"Read":2' ""
+check_contains "(f) mix: bash nudge cat = 1"             "$CFG_F" "$PROJ_F" '"cat":1' ""
+
+# -- (g) no ledger at all -> section absent, and the rest of the output is
+#    byte-for-byte unchanged. Captures output at three points: no
+#    .optimus/ at all, .optimus/config.json present but no events file
+#    yet, and finally with a real ledger -- asserting the section stays
+#    absent through the first two and that adding the ledger only ever
+#    *appends* to what was there before (the pre-existing output is an
+#    exact prefix of the new output).
+CFG_G="$WORKDIR/cfg-ledger-none"
+PROJ_G="$WORKDIR/ledger-none-project"
+mkdir -p "$PROJ_G"
+mkdir -p "$CFG_G/projects"
+SLUG_G="$(correct_slug "$PROJ_G")"
+mkdir -p "$CFG_G/projects/$SLUG_G"
+write_assistant_line "$CFG_G/projects/$SLUG_G/session-g.jsonl" "$PROJ_G" "claude-sonnet-5" 100 50 0 0
+
+BEFORE_G="$(run_stats "$CFG_G" "$PROJ_G")" || true
+if echo "$BEFORE_G" | grep -qF "$LEDGER_SECTION_MARKER"; then
+  echo "FAIL: (g) no .optimus/ at all: section should be absent"
+  fail=$((fail+1))
+else
+  echo "PASS: (g) no .optimus/ at all: section absent"
+  pass=$((pass+1))
+fi
+
+mkdir -p "$PROJ_G/.optimus"
+echo '{"enabled":true}' >"$PROJ_G/.optimus/config.json"
+AFTER_CONFIG_ONLY_G="$(run_stats "$CFG_G" "$PROJ_G")" || true
+if echo "$AFTER_CONFIG_ONLY_G" | grep -qF "$LEDGER_SECTION_MARKER"; then
+  echo "FAIL: (g) config.json but no events file: section should still be absent"
+  fail=$((fail+1))
+else
+  echo "PASS: (g) config.json but no events file: section still absent"
+  pass=$((pass+1))
+fi
+if [ "$BEFORE_G" = "$AFTER_CONFIG_ONLY_G" ]; then
+  echo "PASS: (g) adding .optimus/config.json alone leaves output byte-identical"
+  pass=$((pass+1))
+else
+  echo "FAIL: (g) adding .optimus/config.json alone changed pre-existing output"
+  fail=$((fail+1))
+fi
+
+mkdir -p "$PROJ_G/.optimus/state"
+write_ledger_event "$PROJ_G/.optimus/state/events.jsonl" '{"v":1,"ts":"2026-01-01T00:00:00.000Z","ev":"work_tool_denied","session_id":"s1","tool":"Read"}'
+AFTER_WITH_LEDGER_G="$(run_stats "$CFG_G" "$PROJ_G")" || true
+if echo "$AFTER_WITH_LEDGER_G" | grep -qF "$LEDGER_SECTION_MARKER"; then
+  echo "PASS: (g) with a real ledger: section now present"
+  pass=$((pass+1))
+else
+  echo "FAIL: (g) with a real ledger: section should now be present"
+  fail=$((fail+1))
+fi
+# The new section is inserted right after the dispatch tallies but BEFORE
+# the pre-existing "Estimated saving" block (per this feature's own spec:
+# printed after the dispatch tallies, which is not the very end of the
+# script's output) -- so BEFORE_G is not a literal string-prefix of
+# AFTER_WITH_LEDGER_G as a whole. Split both outputs on that fixed anchor
+# instead: everything *before* it must be an unchanged prefix (dispatch
+# tallies, now followed by the new section instead of directly by the
+# anchor); everything *from* the anchor onward must be byte-identical,
+# proving the pre-existing "Estimated saving" block itself was neither
+# altered nor reordered, only pushed later in the stream by an insertion.
+ANCHOR_G="Estimated saving vs. running delegated work on the expensive (opus) tier:"
+BEFORE_PREFIX_G="${BEFORE_G%%"$ANCHOR_G"*}"
+AFTER_PREFIX_G="${AFTER_WITH_LEDGER_G%%"$ANCHOR_G"*}"
+BEFORE_SUFFIX_G="${BEFORE_G#"$BEFORE_PREFIX_G"}"
+AFTER_SUFFIX_G="${AFTER_WITH_LEDGER_G#"$AFTER_PREFIX_G"}"
+
+case "$AFTER_PREFIX_G" in
+  "$BEFORE_PREFIX_G"*)
+    echo "PASS: (g) with a real ledger: everything before the insertion point is an unchanged prefix"
+    pass=$((pass+1))
+    ;;
+  *)
+    echo "FAIL: (g) with a real ledger: output before the insertion point changed"
+    fail=$((fail+1))
+    ;;
+esac
+if [ "$AFTER_SUFFIX_G" = "$BEFORE_SUFFIX_G" ]; then
+  echo "PASS: (g) with a real ledger: the pre-existing 'Estimated saving' block is untouched, just pushed later"
+  pass=$((pass+1))
+else
+  echo "FAIL: (g) with a real ledger: the pre-existing 'Estimated saving' block changed"
+  fail=$((fail+1))
+fi
+
+# -- (h) malformed lines mixed with valid ones are skipped without crashing.
+CFG_H="$WORKDIR/cfg-ledger-malformed"
+PROJ_H="$WORKDIR/ledger-malformed-project"
+mkdir -p "$PROJ_H/.optimus/state"
+echo '{"enabled":true}' >"$PROJ_H/.optimus/config.json"
+mkdir -p "$CFG_H/projects"
+SLUG_H="$(correct_slug "$PROJ_H")"
+mkdir -p "$CFG_H/projects/$SLUG_H"
+write_assistant_line "$CFG_H/projects/$SLUG_H/session-h.jsonl" "$PROJ_H" "claude-sonnet-5" 100 50 0 0
+
+LEDGER_H="$PROJ_H/.optimus/state/events.jsonl"
+write_garbage_line "$LEDGER_H"
+write_ledger_event "$LEDGER_H" '{"v":1,"ts":"2026-01-01T00:00:00.000Z","ev":"dispatch_allowed","session_id":"s1","tool_use_id":"t1","model":"haiku"}'
+write_garbage_line "$LEDGER_H"
+write_ledger_event "$LEDGER_H" '{"v":1,"ts":"2026-01-01T00:00:01.000Z","ev":"work_tool_denied","session_id":"s1","tool":"Edit"}'
+
+check_contains "(h) malformed lines skipped: no crash, exit 0" "$CFG_H" "$PROJ_H" "$LEDGER_SECTION_MARKER" ""
+check_contains "(h) malformed lines skipped: dispatch_allowed=1 still counted" "$CFG_H" "$PROJ_H" "dispatches allowed         : 1" ""
+check_contains "(h) malformed lines skipped: work_tool_denied Edit=1 still counted" "$CFG_H" "$PROJ_H" '"Edit":1' ""
+
+# -- (i) a rotated events.jsonl.1 is included in the counts and triggers
+#    the approximate-comparison caveat.
+CFG_I="$WORKDIR/cfg-ledger-rotated"
+PROJ_I="$WORKDIR/ledger-rotated-project"
+mkdir -p "$PROJ_I/.optimus/state"
+echo '{"enabled":true}' >"$PROJ_I/.optimus/config.json"
+mkdir -p "$CFG_I/projects"
+SLUG_I="$(correct_slug "$PROJ_I")"
+mkdir -p "$CFG_I/projects/$SLUG_I"
+write_assistant_line "$CFG_I/projects/$SLUG_I/session-i.jsonl" "$PROJ_I" "claude-sonnet-5" 100 50 0 0
+
+write_ledger_event "$PROJ_I/.optimus/state/events.jsonl.1" '{"v":1,"ts":"2026-01-01T00:00:00.000Z","ev":"work_tool_denied","session_id":"s1","tool":"Read"}'
+write_ledger_event "$PROJ_I/.optimus/state/events.jsonl"   '{"v":1,"ts":"2026-01-01T00:00:01.000Z","ev":"work_tool_denied","session_id":"s1","tool":"Write"}'
+
+check_contains "(i) rotated: generation .1's event counted (Read=1)" "$CFG_I" "$PROJ_I" '"Read":1' ""
+check_contains "(i) rotated: current generation's event counted (Write=1)" "$CFG_I" "$PROJ_I" '"Write":1' ""
+check_contains "(i) rotated: approximate-comparison caveat present" "$CFG_I" "$PROJ_I" "rotated events.jsonl.1 generation was included" ""
+
+# -- (j) drift case: ledger says 3x requested haiku, the only subagent
+#    transcript reports an opus-family (actual) model -> the family-level
+#    drift flag must appear.
+CFG_J="$WORKDIR/cfg-ledger-drift"
+PROJ_J="$WORKDIR/ledger-drift-project"
+mkdir -p "$PROJ_J/.optimus/state"
+echo '{"enabled":true}' >"$PROJ_J/.optimus/config.json"
+mkdir -p "$CFG_J/projects"
+SLUG_J="$(correct_slug "$PROJ_J")"
+mkdir -p "$CFG_J/projects/$SLUG_J"
+write_assistant_line "$CFG_J/projects/$SLUG_J/session-j.jsonl" "$PROJ_J" "claude-sonnet-5" 100 50 0 0
+write_subagent_transcript "$CFG_J/projects/$SLUG_J/session-j/subagents" "1" "claude-opus-5-20260101"
+
+LEDGER_J="$PROJ_J/.optimus/state/events.jsonl"
+write_ledger_event "$LEDGER_J" '{"v":1,"ts":"2026-01-01T00:00:00.000Z","ev":"dispatch_allowed","session_id":"s1","tool_use_id":"t1","model":"haiku"}'
+write_ledger_event "$LEDGER_J" '{"v":1,"ts":"2026-01-01T00:00:01.000Z","ev":"dispatch_allowed","session_id":"s1","tool_use_id":"t2","model":"haiku"}'
+write_ledger_event "$LEDGER_J" '{"v":1,"ts":"2026-01-01T00:00:02.000Z","ev":"dispatch_allowed","session_id":"s1","tool_use_id":"t3","model":"haiku"}'
+
+check_contains "(j) drift: haiku requested=3 actual=0"  "$CFG_J" "$PROJ_J" "requested=3 actual=0" ""
+check_contains "(j) drift: opus requested=0 actual=1"   "$CFG_J" "$PROJ_J" "requested=0 actual=1" ""
+check_contains "(j) drift: drift flag present"          "$CFG_J" "$PROJ_J" "counts differ for at least one family" ""
+
+# -- (k) non-drift case: requested families match actual families exactly
+#    -> no drift may be claimed.
+CFG_K="$WORKDIR/cfg-ledger-nodrift"
+PROJ_K="$WORKDIR/ledger-nodrift-project"
+mkdir -p "$PROJ_K/.optimus/state"
+echo '{"enabled":true}' >"$PROJ_K/.optimus/config.json"
+mkdir -p "$CFG_K/projects"
+SLUG_K="$(correct_slug "$PROJ_K")"
+mkdir -p "$CFG_K/projects/$SLUG_K"
+write_assistant_line "$CFG_K/projects/$SLUG_K/session-k.jsonl" "$PROJ_K" "claude-sonnet-5" 100 50 0 0
+write_subagent_transcript "$CFG_K/projects/$SLUG_K/session-k/subagents" "1" "claude-haiku-4-5-20251001"
+
+write_ledger_event "$PROJ_K/.optimus/state/events.jsonl" '{"v":1,"ts":"2026-01-01T00:00:00.000Z","ev":"dispatch_allowed","session_id":"s1","tool_use_id":"t1","model":"haiku"}'
+
+check_contains "(k) non-drift: no-drift line present"     "$CFG_K" "$PROJ_K" "no drift indicated" ""
+check_contains "(k) non-drift: no 'counts differ' claim"  "$CFG_K" "$PROJ_K" "" "counts differ"
+check_contains "(k) non-drift: no approximate-caveat noise" "$CFG_K" "$PROJ_K" "" "CAVEAT"
 
 echo ""
 echo "== $pass passed, $fail failed =="

@@ -1,0 +1,16 @@
+{
+  "session_id": "test-session",
+  "transcript_path": "/tmp/does-not-exist.jsonl",
+  "cwd": "__PROJECT__",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "Investigate OPTIMUS_SENTINEL_9f3a1b findings",
+    "prompt": "Look into OPTIMUS_SENTINEL_9f3a1b and report back",
+    "subagent_type": "general-purpose",
+    "model": "haiku",
+    "run_in_background": false
+  },
+  "tool_use_id": "toolu_ledger_allowed"
+}

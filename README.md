@@ -78,10 +78,12 @@ Optimus status for this project
 ### `/optimus-stats`
 
 Reports token usage by model, subagent dispatch counts, orchestrator vs.
-delegated split, and an **estimated** saving versus running all that
-delegated work on the expensive tier instead. Read-only, safe to run any
-time, and degrades to a plain "no data yet" message rather than erroring
-when there's no session history for the project yet.
+delegated split, an **estimated** saving versus running all that delegated
+work on the expensive tier instead, and — if the project has ever recorded
+one — an enforcement summary read back from [the ledger](#the-enforcement-ledger-hooksoptimus-ledgerjs).
+Read-only, safe to run any time, and degrades to a plain "no data yet"
+message rather than erroring when there's no session history for the
+project yet.
 
 ```
 Orchestrator usage (main session, by model):
@@ -91,12 +93,34 @@ Delegated usage (subagent transcripts, by model):
   claude-sonnet-5: turns=4 input=8 output=408 cache_write=61812 cache_read=61627 cost=$0.1710
   claude-haiku-4-5: turns=39 input=336 output=5914 cache_write=160449 cache_read=881407 cost=$0.3186
 
+Enforcement ledger summary (from .optimus/state/events.jsonl):
+  dispatches allowed         : 3
+  dispatches denied by reason: {"no_model":1,"expensive_model":1}
+  work-tool denials by tool  : {"Read":2,"Edit":1}
+  bash nudges by cmd_head    : {"cat":1}
+
+Requested-vs-actual model family (ledger-requested alias vs. transcript-resolved model, family-level only):
+  haiku : requested=3 actual=1  <- counts differ
+  sonnet: requested=0 actual=0
+  opus  : requested=0 actual=1  <- counts differ
+  other : requested=0 actual=0
+
+Model family check: requested and actual counts differ for at least one family -- counts differ, which may be rotation/pruning rather than drift (see caveat below), not proof that a different model actually ran than what was requested.
+
 Estimated saving vs. running delegated work on the expensive (opus) tier:
   actual delegated cost     : $0.4896
   hypothetical cost on opus : $2.0204
   estimated saving          : $1.5309
   ESTIMATE, not a fact: assumes opus would have used the same token volume for the same work.
 ```
+
+(That's a deliberately busy example, to show every line the enforcement
+section can print in one place — a real project usually shows far fewer
+denials, and prints no `CAVEAT` line at all unless the ledger has rotated
+or the two side's totals actually differ. This whole section — from
+`Enforcement ledger summary` through the `Model family check` line — is
+omitted entirely for a project with no ledger yet, e.g. one that predates
+this feature; every line before and after it is unaffected.)
 
 It reads token usage straight out of Claude Code's own local transcript
 files — there's no official API for this. Two things a naive version of this
@@ -121,6 +145,30 @@ trusting the dollar figures for anything real. Cache-token pricing
 specifically is an **assumption** (standard published multipliers over base
 input price), not independently verified — also stated in the output, not
 just here.
+
+**Enforcement ledger reporting.** The `Enforcement ledger summary` block
+tallies what [the ledger](#the-enforcement-ledger-hooksoptimus-ledgerjs)
+actually recorded — dispatch allow/deny counts, work-tool denials, Bash
+nudges — read straight from `.optimus/state/events.jsonl` (and a rotated
+`events.jsonl.1`, if present). The `Requested-vs-actual model family` block
+then compares the model *alias* a dispatch requested (what the ledger
+records, e.g. `"haiku"`) against the *actual* resolved model id a subagent
+transcript shows it ran on (what the tables above already compute) — but
+only at the coarse `haiku`/`sonnet`/`opus`/`other` family level, by
+substring match. This is deliberate, not a shortcut: an exact
+alias-to-model-id table would go stale the same way a pricing snapshot
+does, the moment a model version changes what a given alias resolves to.
+
+Treat that comparison as approximate, not as proof of drift either way, for
+three concrete reasons this command states directly in its own output when
+they apply: the ledger is cumulative and loses history whenever it rotates;
+Claude Code can prune transcript files independently of the ledger; and
+only *allowed* dispatches ever reach a transcript at all (a denied dispatch
+never ran, so it can never show up on the "actual" side). If the ledger has
+rotated, or the two sides' totals simply differ, the command prints an
+explicit `CAVEAT` line saying so — a mismatch is worded as "counts differ —
+may be rotation/pruning rather than drift," never asserted as confirmed
+model substitution.
 
 ## The kill switch
 
@@ -167,21 +215,29 @@ Optimus/
 │   ├── hooks.json           # THE conventional path Claude Code's hook loader honors
 │   ├── optimus-gate.js      # PreToolUse: subagent exemption, work-tool deny, Agent model check, Bash speed bump
 │   ├── optimus-reinforce.js # UserPromptSubmit: per-turn policy reminder (decays otherwise, see below)
-│   └── optimus-config.js    # shared: repo-local config resolution, kill-switch check, safe file I/O
+│   ├── optimus-config.js    # shared: repo-local config resolution, kill-switch check, safe file I/O
+│   └── optimus-ledger.js    # shared: append-only enforcement-event ledger, called from optimus-gate.js
 ├── bin/
 │   ├── optimus-cli          # implementation behind /optimus — reads or writes .optimus/config.json
-│   └── optimus-stats        # implementation behind /optimus-stats — walks transcripts, computes cost/savings
+│   └── optimus-stats        # implementation behind /optimus-stats — walks transcripts + the ledger, computes cost/savings/enforcement counts
 ├── commands/
 │   ├── optimus.md           # /optimus — invokes bin/optimus-cli via PATH
 │   └── optimus-stats.md     # /optimus-stats — invokes bin/optimus-stats via PATH
 ├── tests/
 │   ├── fixtures/*.json      # captured-shape PreToolUse payloads (main session, subagent, Agent dispatches, Bash)
 │   ├── run-gate-tests.sh    # feeds each fixture to optimus-gate.js and checks the allow/deny outcome
-│   └── run-stats-tests.sh   # synthetic transcripts; checks optimus-stats' project-dir resolution (slug + fallback)
+│   ├── run-ledger-tests.sh  # feeds fixtures through the gate and inspects the resulting .optimus/state/events.jsonl
+│   └── run-stats-tests.sh   # synthetic transcripts + ledgers; checks optimus-stats' project-dir resolution and reporting
 ├── README.md
 ├── LICENSE
 └── .gitignore
 ```
+
+A project that activates Optimus also gets a small amount of runtime state
+written under its own `.optimus/` directory (`config.json`, and — once any
+enforcement event has fired — `state/events.jsonl`). Neither is part of this
+plugin's own source tree; see "The enforcement ledger" below for what that
+state file holds.
 
 ### `hooks/hooks.json` — naming matters, and this is not hypothetical
 
@@ -246,6 +302,46 @@ everything else in the "advisory" row of the table above — it doesn't
 enforce anything by itself, `optimus-gate.js` does that — but it measurably
 changed model behavior in testing (the orchestrator started delegating
 proactively instead of only after being denied once).
+
+### The enforcement ledger (`hooks/optimus-ledger.js`)
+
+Every enforcement decision `optimus-gate.js` makes — an `Agent` dispatch
+allowed or denied, a work tool denied, a Bash-as-bypass nudge — is also
+recorded as one JSON line appended to
+`<project root>/.optimus/state/events.jsonl`. This exists so that
+enforcement isn't invisible: without it, there was no way to see *how much*
+Optimus was actually doing versus how much it was invisibly letting slide.
+`/optimus-stats` reads this file back (see "Enforcement ledger reporting"
+above) to report those counts, plus an approximate comparison between the
+model alias a dispatch requested and the model a subagent transcript shows
+it actually ran on.
+
+A few properties of this file are load-bearing, not incidental:
+
+- **Append-only, never read-modify-written.** Every write is a single
+  `fs.appendFileSync` call, which makes "seek to end, then write" atomic at
+  the OS level. That's what makes it safe for many gate processes — one per
+  tool call, across the orchestrator and every subagent it dispatches — to
+  write to the same file at the same moment without corrupting each other's
+  lines or needing any locking.
+- **Holds no prompts, file paths, file contents, or full shell commands.**
+  The ledger module itself has no notion of what a "prompt" or a "path" is —
+  it only ever writes the specific, reduced fields each caller hands it
+  (e.g. a Bash nudge logs `cmd_head`, the first word of the command stripped
+  to word characters, never the command itself). Every string field is also
+  capped at 200 characters as a defensive backstop.
+- **Rotates at 1 MB.** Once the file reaches that size, the next write
+  renames it to a single `events.jsonl.1` generation (replacing any
+  previous one) and starts a fresh `events.jsonl`. There is exactly one
+  rotated generation, not a numbered history — this is a lightweight cap on
+  disk usage, not an audit archive.
+- **Gitignored.** Like `.optimus/config.json`, this is per-project runtime
+  state, not something meant to be committed (this plugin's own
+  `.gitignore` excludes `.optimus/` for exactly this reason).
+- **Fails silently and never blocks a tool call.** Writing the ledger sits
+  on the hot path between the gate deciding and emitting its verdict, so it
+  can never throw or write to stdout — a missing/unwritable state directory
+  degrades to "no ledger for this event," never to a wedged session.
 
 ## Known limitations
 

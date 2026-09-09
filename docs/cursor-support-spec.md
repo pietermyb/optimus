@@ -145,9 +145,9 @@ Cursor research). `status` prints the config file path, activation state, and ki
 `bin/optimus-stats` is the implementation behind `/optimus-stats`. It reads Claude Code's own
 transcript files directly (there is no documented API for this): `<config dir>/projects/<slug>/`,
 where `<config dir>` is `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`, and `slug` is `cwd` with
-every non-alphanumeric character replaced by `-` (`bin/optimus-stats:87-89`, explicitly called
+every non-alphanumeric character replaced by `-` (`bin/optimus-stats:93-95`, explicitly called
 "empirically observed... undocumented"). Because that slug is a guess at an undocumented format,
-resolution goes through `resolveProjectDir` (`bin/optimus-stats:153-217`): it tries the slug path
+resolution goes through `resolveProjectDir` (`bin/optimus-stats:159-223`): it tries the slug path
 first, and if that directory doesn't exist, falls back to scanning each project directory's own
 transcripts for a top-level `cwd` field that matches exactly — so a wrong slug guess doesn't
 produce a false "no data" result. Once the directory is resolved, it walks every `*.jsonl` session
@@ -198,6 +198,74 @@ kill switch (forces allow even while active), and deactivation (allowed again). 
 deactivates Optimus for its throwaway project via the same `bin/optimus-cli` code path `/optimus
 on`/`off` uses, not by hand-writing the config file.
 
+### 1.6 The enforcement ledger (`hooks/optimus-ledger.js`)
+
+This module postdates the rest of Section 1 (it landed after this spec's original research pass)
+but is now load-bearing enough to a Cursor port that it needs its own read, for the same reason
+Section 1.2/1.3 exist: know the real shape before designing around a guess. `hooks/optimus-gate.js`
+calls `recordEvent(cwd, event)` from this module at every point it already reaches a verdict —
+`dispatch_allowed`/`dispatch_denied` in the `Agent` branch (`hooks/optimus-gate.js:118-123,
+134-140, 149-155`), `work_tool_denied` in the work-tool branch (`hooks/optimus-gate.js:161-165`),
+and `bash_nudge` in the Bash branch (`hooks/optimus-gate.js:181-185`). `optimus-reinforce.js` calls
+nothing here — this is a gate-only concern.
+
+Properties that matter for a port, not just for Claude Code:
+
+- **Location is repo-local, not Claude-Code-specific.** `recordEvent()` resolves
+  `<projectRoot>/.optimus/state/events.jsonl` via `findProjectRoot(cwd)` — the exact same
+  `optimus-config.js` walk-up Section 1.2 already documents, not anything tied to Claude Code's own
+  transcript layout. Whatever `cwd` a host's hook payload carries is all this needs.
+- **Gated by the same two checks the gate itself already makes.** `recordEvent()` calls
+  `isKillSwitchActive()` and `getConfig(cwd).enabled` itself, independently of its caller — so even
+  a future adapter that forgets one of those checks before calling `recordEvent()` cannot cause an
+  event to be written for a project where Optimus isn't active, or while the kill switch is on.
+- **Append-only, `fs.appendFileSync` with the `a` flag, never read-modify-written.** This is what
+  makes concurrent writes from many gate processes (main session + every subagent it dispatches,
+  all potentially calling tools at once) safe with no locking — each call's own "seek to end, write"
+  is atomic at the OS level. Anything a Cursor adapter does here must preserve this property; a
+  ported implementation that reads the file to append to an in-memory array first, then rewrites the
+  whole thing, would reopen exactly the race this design avoids.
+- **Privacy backstop baked into the module, not just convention.** `recordEvent()` caps every string
+  field at `MAX_FIELD_LEN` (200 characters) before writing, regardless of what its caller passes —
+  belt-and-suspenders under the same rule Section 1.1 already states (never log prompts, paths, file
+  contents, or full shell commands). The gate only ever passes reduced fields to begin with (e.g.
+  `cmd_head`, the first word of a Bash command, never the command itself).
+- **Rotates at 1 MB to a single `events.jsonl.1` generation**, checked by `fs.statSync` immediately
+  before each append (`ROTATE_MAX_BYTES = 1024 * 1024`) — deliberately a stat, not a read, so
+  rotation itself never reopens the concurrency problem the append-only design solves.
+- **Never throws, never writes to stdout.** Every fs/JSON call is wrapped in try/catch; a failure is
+  swallowed (a stderr note is the most it does). This sits on the exact hot path between the gate
+  deciding and emitting its verdict as JSON on stdout, so the same "a bug here must never wedge a
+  session" principle Section 1.1 states for the gate itself applies here without exception.
+
+**What a Cursor adapter would need to replicate.** `hooks/optimus-ledger.js` is pure Node/fs with no
+Claude-Code-specific API surface — the same property Section 6.2 already claims for
+`hooks/optimus-config.js`, and for the same reason: it should be importable **unmodified** by
+`hooks/optimus-gate-cursor.js` once that file exists, not reimplemented. The only real work is in
+the adapter, not the ledger module itself:
+
+1. **Call `recordEvent(cwd, event)` at the equivalent points** — after a `Task` dispatch is
+   allowed/denied (Section 2, Section 4), after a work-tool denial (once Cursor's own `WORK_TOOLS`
+   equivalent is settled per the open question in Section 4), and after a `Shell`/
+   `beforeShellExecution` bypass match (Section 2). Same event names (`dispatch_allowed`,
+   `dispatch_denied`, `work_tool_denied`, `bash_nudge`), same field sets, so `/optimus-stats`'
+   reporting (see Section 9(d)'s addendum below) needs zero host-specific branching to read either
+   host's ledger.
+2. **Translate field names at the call site, not inside the ledger module.** Cursor's `preToolUse`
+   payload carries `conversation_id`, not `session_id` (Section 5.1's field list) — the adapter must
+   pass `event.session_id = payload.conversation_id`, mirroring how it already has to translate
+   `tool_name`/`tool_input` shapes per Section 6.2. `tool_use_id` and `cwd` are already named
+   identically on both hosts, so those pass through unchanged.
+3. **Use whatever raw value Cursor's `Task` `tool_input` carries as its model-selection field** (still
+   unverified per Section 2's row on this) as the ledger's `model` field for `dispatch_allowed`/
+   `dispatch_denied` — same principle as the Claude Code side recording the raw requested alias
+   (`"haiku"`), not a resolved model id. This is what lets `/optimus-stats`' family-level
+   requested-vs-actual comparison (Section 9(d) below) work the same way on both hosts.
+4. **Nothing else.** No new rotation logic, no new privacy capping, no new concurrency handling —
+   all of that is already host-agnostic in the module as written. If Unknown 1 (Section 5.1) resolves
+   in a way that changes *how* `isSubagent` is determined on Cursor, that changes what calls
+   `recordEvent()` and when — it does not change anything inside `optimus-ledger.js` itself.
+
 ---
 
 ## 2. Capability mapping table
@@ -212,6 +280,7 @@ on`/`off` uses, not by hand-writing the config file.
 | Repo-local activation state, kill switch, config resolution | `hooks/optimus-config.js`, pure Node/fs, no Claude-Code-specific API calls | Same Node/fs code runs unmodified under Cursor's hook runtime (hooks are just executables reading stdin/writing stdout) | Fully portable, no changes needed. |
 | Slash command `/optimus [on\|off\|status]` | `commands/optimus.md`, Claude Code slash-command frontmatter, `bin/` on `PATH` | Cursor does not have an identical "plugin command with `allowed-tools` frontmatter that runs a PATH binary" primitive in the reviewed docs. Closest analog is a Cursor **skill** (`.cursor/skills/<name>/SKILL.md`) invoked as `/name`, or a legacy `.cursor/commands/*.md` file. | Needs its own small adapter; out of scope for the hook port itself but listed as an open decision in Section 9. |
 | Cost/usage reporting (`optimus-stats`) | Reads Claude Code's own undocumented transcript file layout (`~/.claude/projects/<slug>/...`) | `CURSOR_TRANSCRIPT_PATH` env var exists and `transcript_path` is a field on every Cursor hook stdin payload, but **the format of that transcript is not documented in the material reviewed for this spec** | **UNVERIFIED.** See Section 9(d). |
+| Enforcement ledger / audit trail (`hooks/optimus-ledger.js`) | `recordEvent(cwd, event)`, pure Node/fs, resolves its own path via the shared `findProjectRoot(cwd)` — no Claude-Code-specific API calls (see Section 1.6) | Same Node/fs module runs unmodified; the Cursor adapter only needs to call it with translated field names (`conversation_id` -> `session_id`; `model`/`tool_use_id`/`cwd` pass through as-is) | Fully portable, no changes needed to the ledger module itself — see Section 1.6's "what a Cursor adapter would need to replicate." The *writing* side is trivial; the caveat is that the ledger-vs-transcript **comparison** `/optimus-stats` builds on top of it inherits Unknown 3 (Section 9(d)) on Cursor, since that comparison's "actual" side still needs a working Cursor transcript reader. |
 
 ---
 
@@ -226,7 +295,7 @@ This is worth flagging because Optimus's README states the opposite is true for 
 two places that are worth quoting exactly rather than summarizing, since this spec must not
 misrepresent a decision the maintainer already made deliberately:
 
-From the enforcement table (`README.md:152`):
+From the enforcement table (`README.md:200`):
 
 > `"Only block when the orchestrator is specifically Opus" (model-conditional enforcement) | — |
 > Not implemented, deliberately. There is no reliable field carrying the calling model in a
@@ -236,7 +305,7 @@ From the enforcement table (`README.md:152`):
 > detecting "is this Opus" — which also means it protects you even if you're driving the
 > orchestrator session on a different expensive model.`
 
-From "Known limitations" (`README.md:251-259`):
+From "Known limitations" (`README.md:347-355`):
 
 > `No reliable way to detect the orchestrator's own model from inside a hook. PreToolUse payloads
 > don't carry a model field, and neither does the hook process's own environment. The one indirect
@@ -636,7 +705,10 @@ not expose in the same way — no current Optimus rule needs it, so leave it unu
 inventing a use for it.
 
 `hooks/optimus-config.js` is **untouched** — it's already pure Node/fs with no Claude-Code-specific
-API surface, and both adapters import it directly.
+API surface, and both adapters import it directly. `hooks/optimus-ledger.js` is untouched for the
+same reason (see Section 1.6): `optimus-gate-cursor.js` must call its `recordEvent(cwd, event)` at
+the same points `optimus-gate.js` already does — after `decide()` returns, translating Cursor's
+`conversation_id` into the ledger's `session_id` field — rather than growing a second ledger writer.
 
 ### 6.3 New files and their responsibilities
 
@@ -648,14 +720,18 @@ Optimus/
 │   ├── optimus-gate-cursor.js    # NEW — Cursor adapter (thin — parses/emits Cursor shapes, calls decide())
 │   ├── optimus-reinforce.js      # unchanged — Claude Code UserPromptSubmit hook
 │   ├── optimus-core.js           # NEW — extracted pure decision logic, shared by both adapters
-│   └── optimus-config.js         # unchanged — shared config/kill-switch helpers
+│   ├── optimus-config.js         # unchanged — shared config/kill-switch helpers
+│   └── optimus-ledger.js         # unchanged — shared enforcement-event ledger (see Section 1.6);
+│                                  #   both adapters call recordEvent() at the equivalent points
 ├── cursor/
 │   ├── hooks.json                # NEW — Cursor hook registration template (preToolUse -> optimus-gate-cursor.js,
 │   │                              #        beforeShellExecution -> same or a thin wrapper, sessionStart -> one-shot reminder)
 │   └── optimus.mdc               # NEW — alwaysApply rule carrying the reinforce text (see Section 8)
 ├── bin/
 │   ├── optimus-cli               # extended — new `install cursor` subcommand (see 6.4)
-│   └── optimus-stats             # unchanged (see Section 9(d) for whether this gets a Cursor counterpart)
+│   └── optimus-stats             # unchanged; its ledger-reading half (Section 9(d) addendum) needs
+│                                  #   no Cursor-specific code once the ledger is wired up above — only
+│                                  #   its transcript-reading half remains gated on Section 9(d) itself
 ```
 
 `cursor/hooks.json` is a **template**, not something Cursor reads directly from this location — it
@@ -816,6 +892,19 @@ without first inspecting a real transcript file risks the same category of under
 empirical step (dump a real `transcript_path` file from a real Cursor session and inspect its
 structure) before any code is written — treat it as a third Unknown alongside Section 5's two, not
 as a trivial follow-on.
+
+*Addendum, now that `bin/optimus-stats` also reports off the ledger (Section 1.6):* that new
+half of `optimus-stats` splits cleanly along the same Unknown-3 line. Its "Enforcement ledger
+summary" block (dispatch/deny/nudge counts) reads only `hooks/optimus-ledger.js`'s output —
+`.optimus/state/events.jsonl` — which is repo-local and entirely independent of Claude Code's or
+Cursor's transcript format. That half would work on a Cursor port with **zero** additional code
+once the adapter is calling `recordEvent()` per Section 1.6, regardless of how Unknown 3 above
+resolves. Its "Requested-vs-actual model family" block, in contrast, needs the *actual* side — a
+per-family tally over resolved model ids read from real subagent transcripts — and that half is
+gated on Unknown 3 exactly like the rest of `optimus-stats`'s transcript reading. Do not conflate
+the two: a Cursor build can ship enforcement-count reporting today (once the gate writes to the
+ledger there) while still correctly reporting "no data" for the drift comparison until Unknown 3
+is resolved.
 
 ---
 

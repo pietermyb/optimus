@@ -33,6 +33,21 @@ const {
   WORK_TOOLS,
   EXPENSIVE_MODEL_RE,
 } = require(path.join(__dirname, 'optimus-config.js'));
+const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
+
+/** Max length of the cmd_head field logged for a Bash nudge. */
+const CMD_HEAD_MAX_LEN = 32;
+
+/**
+ * Reduces a shell command down to a privacy-safe fragment for the ledger:
+ * the first whitespace-delimited token, stripped to word characters only,
+ * truncated to CMD_HEAD_MAX_LEN. The full command is never passed to the
+ * ledger — only this.
+ */
+function cmdHead(command) {
+  const first = String(command || '').trim().split(/\s+/)[0] || '';
+  return first.replace(/[^\w]/g, '').slice(0, CMD_HEAD_MAX_LEN);
+}
 
 // Best-effort patterns for "this Bash command is really just a file read/search,
 // dressed up to dodge the Read/Grep/etc. denial". Deliberately narrow and
@@ -100,6 +115,12 @@ function main(raw) {
   if (toolName === 'Agent') {
     const model = toolInput.model;
     if (typeof model !== 'string' || model.trim() === '') {
+      recordEvent(payload.cwd, {
+        ev: 'dispatch_denied',
+        session_id: payload.session_id,
+        tool_use_id: payload.tool_use_id,
+        reason: 'no_model',
+      });
       return deny(
         'Optimus: this Agent dispatch has no tool_input.model set, which means it would ' +
           "silently inherit the orchestrator's own (expensive) model instead of running cheaper. " +
@@ -110,6 +131,13 @@ function main(raw) {
       );
     }
     if (EXPENSIVE_MODEL_RE.test(model)) {
+      recordEvent(payload.cwd, {
+        ev: 'dispatch_denied',
+        session_id: payload.session_id,
+        tool_use_id: payload.tool_use_id,
+        reason: 'expensive_model',
+        model: model,
+      });
       return deny(
         'Optimus: this Agent dispatch names model="' +
           model +
@@ -118,11 +146,23 @@ function main(raw) {
           'simple/mechanical work, or model="sonnet" for anything needing real judgement.'
       );
     }
+    recordEvent(payload.cwd, {
+      ev: 'dispatch_allowed',
+      session_id: payload.session_id,
+      tool_use_id: payload.tool_use_id,
+      model: model,
+      agent_type: toolInput.subagent_type,
+    });
     return allow();
   }
 
   // Rule 4 — work tools denied in the main session while Optimus is active.
   if (WORK_TOOLS.has(toolName)) {
+    recordEvent(payload.cwd, {
+      ev: 'work_tool_denied',
+      session_id: payload.session_id,
+      tool: toolName,
+    });
     return deny(
       'Optimus: the ' +
         toolName +
@@ -138,6 +178,11 @@ function main(raw) {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     for (const pattern of BASH_READ_PATTERNS) {
       if (pattern.test(command)) {
+        recordEvent(payload.cwd, {
+          ev: 'bash_nudge',
+          session_id: payload.session_id,
+          cmd_head: cmdHead(command),
+        });
         return deny(
           'Optimus: this Bash command ("' +
             command.slice(0, 160) +
