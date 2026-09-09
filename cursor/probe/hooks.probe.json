@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      { "command": "node \"${workspaceFolder}/.cursor/probe/probe.js\"" }
+    ]
+  }
+}

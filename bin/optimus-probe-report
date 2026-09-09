@@ -1,0 +1,154 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * Deterministic analyser for a Cursor probe log (see
+ * cursor/probe/README.md for how the log is produced).
+ *
+ * Answers exactly the two questions the Cursor port is blocked on:
+ *   Unknown 1 — can a preToolUse payload tell a subagent's own tool call
+ *               apart from the orchestrator's?
+ *   Unknown 2 — does any plugin-root variable resolve inside a hook?
+ *
+ * This exists instead of "read the log by eye" because the Unknown-1
+ * decision matrix turns on set differences between two ~15-key objects,
+ * which is precisely where an eyeballed answer gets recorded with
+ * unwarranted confidence.
+ */
+
+const fs = require('fs');
+
+const SUBAGENT_HINT_RE = /agent|subagent|parent|worker|child/i;
+const CORRELATION_KEYS = ['conversation_id', 'generation_id', 'model', 'model_id', 'tool_use_id', 'cwd'];
+const ROOT_VARS = ['CURSOR_PLUGIN_ROOT', 'PLUGIN_ROOT', 'CURSOR_PROJECT_DIR', 'CLAUDE_PROJECT_DIR'];
+
+function die(msg) {
+  console.error('optimus-probe-report: ' + msg);
+  process.exit(1);
+}
+
+const file = process.argv[2];
+if (!file) die('usage: optimus-probe-report <path-to-probe.log>');
+
+let raw;
+try {
+  raw = fs.readFileSync(file, 'utf8');
+} catch (e) {
+  die('cannot read ' + file + ': ' + e.message);
+}
+
+const entries = [];
+raw.split('\n').forEach((line, i) => {
+  const trimmed = line.trim();
+  if (trimmed === '') return;
+  try {
+    entries.push(JSON.parse(trimmed));
+  } catch (e) {
+    console.log('WARNING: line ' + (i + 1) + ' is not JSON, skipped');
+  }
+});
+
+if (entries.length === 0) die('no parseable entries in ' + file);
+
+const events = {};
+for (const e of entries) {
+  const name = (e.stdin && e.stdin.hook_event_name) || '(unknown)';
+  events[name] = (events[name] || 0) + 1;
+}
+
+const preTool = entries.filter((e) => e.stdin && e.stdin.hook_event_name === 'preToolUse');
+
+console.log('== Optimus Cursor probe report ==');
+console.log('log file      : ' + file);
+console.log('total entries : ' + entries.length);
+console.log('events seen   : ' + Object.keys(events).map((k) => k + '=' + events[k]).join(', '));
+console.log('preToolUse    : ' + preTool.length);
+console.log('');
+
+// ---- Unknown 1 --------------------------------------------------------
+console.log('-- Unknown 1: subagent distinguishability --');
+
+if (preTool.length === 0) {
+  console.log('No preToolUse entries at all. Either the hook never fired or it is');
+  console.log('registered on a different event. Re-check the hooks.json before');
+  console.log('drawing any conclusion.');
+  console.log('UNKNOWN 1 VERDICT: inconclusive - no preToolUse entries');
+} else if (preTool.length === 1) {
+  console.log('Only ONE preToolUse entry. If the procedure in cursor/probe/README.md');
+  console.log('was followed (a main-agent read AND a subagent read), this is itself the');
+  console.log('finding: subagent-internal tool calls do not fire preToolUse.');
+  console.log('UNKNOWN 1 VERDICT: subagent tool calls appear not to fire preToolUse');
+} else {
+  const keySets = preTool.map((e) => Object.keys(e.stdin).sort());
+  const union = [...new Set([].concat(...keySets))].sort();
+  const intersection = union.filter((k) => keySets.every((ks) => ks.includes(k)));
+  const variable = union.filter((k) => !intersection.includes(k));
+
+  console.log('key union        : ' + union.join(', '));
+  console.log('keys on every    : ' + intersection.join(', '));
+  console.log('keys on some only: ' + (variable.length ? variable.join(', ') : '(none)'));
+
+  const hinted = union.filter((k) => SUBAGENT_HINT_RE.test(k));
+  const candidates = [...new Set(variable.concat(hinted))].sort();
+  console.log('CANDIDATE SUBAGENT FIELD: ' + (candidates.length ? candidates.join(', ') : '(none)'));
+
+  for (const k of CORRELATION_KEYS) {
+    const values = [...new Set(preTool.map((e) => JSON.stringify(e.stdin[k])))];
+    if (values.length > 1) {
+      console.log('  ' + k + ' differs across preToolUse entries: ' + values.join(' | '));
+    } else {
+      console.log('  ' + k + ' identical across preToolUse entries: ' + values[0]);
+    }
+  }
+
+  if (candidates.length) {
+    console.log('UNKNOWN 1 VERDICT: distinguishing field present -> decision matrix row 1');
+    console.log('  Build hooks/optimus-gate-cursor.js checking: ' + candidates.join(' || '));
+    console.log('  Treat it as an unversioned, undocumented dependency: re-verify on');
+    console.log('  every Cursor update.');
+  } else {
+    console.log('UNKNOWN 1 VERDICT: no distinguishing field -> decision matrix row 2');
+    console.log('  Sidecar correlation via subagentStart/subagentStop is required, OR');
+    console.log('  drop hard enforcement on Cursor and ship rules-only. Maintainer call.');
+  }
+}
+console.log('');
+
+// ---- Unknown 2 --------------------------------------------------------
+console.log('-- Unknown 2: plugin root resolution --');
+const withEnv = entries.filter((e) => e.envSnapshot);
+if (withEnv.length === 0) {
+  console.log('No entry carried an envSnapshot. Re-run with cursor/probe/probe-root.js.');
+  console.log('UNKNOWN 2 VERDICT: inconclusive - no env data');
+} else {
+  const resolved = {};
+  for (const name of ROOT_VARS) {
+    const values = [...new Set(withEnv.map((e) => e.envSnapshot[name]).filter((v) => typeof v === 'string' && v !== ''))];
+    resolved[name] = values;
+    const pad = name + ' '.repeat(Math.max(0, 18 - name.length));
+    console.log('  ' + pad + ' : ' + (values.length ? values.join(' | ') : '(unset/empty)'));
+  }
+  const dirnames = [...new Set(entries.map((e) => e.dirname).filter(Boolean))];
+  console.log('  __dirname          : ' + (dirnames.length ? dirnames.join(' | ') : '(not recorded)'));
+
+  const literals = entries
+    .filter((e) => Array.isArray(e.argv))
+    .filter((e) => e.argv.some((a) => typeof a === 'string' && a.indexOf('${') !== -1));
+  if (literals.length) {
+    console.log('  NOTE: an unexpanded ${...} reached argv - Cursor did NOT interpolate it.');
+  }
+
+  const usable = ['CURSOR_PLUGIN_ROOT', 'PLUGIN_ROOT'].filter((n) => resolved[n].length);
+  if (usable.length) {
+    console.log('UNKNOWN 2 VERDICT: usable plugin-root variable: ' + usable.join(', '));
+    console.log('  cursor/hooks.json may reference it directly.');
+  } else if (dirnames.length) {
+    console.log('UNKNOWN 2 VERDICT: no plugin-root variable resolved, but __dirname did');
+    console.log('  Render absolute paths at install time (optimus-cli install cursor).');
+    console.log('  Cost: the generated .cursor/hooks.json is machine-specific.');
+  } else {
+    console.log('UNKNOWN 2 VERDICT: no plugin-root variable resolved');
+    console.log('  Render absolute paths at install time (optimus-cli install cursor).');
+  }
+}
+process.exit(0);
