@@ -24,6 +24,7 @@ const REMINDER = [
   'Read, Edit, Write, Grep, Glob, WebFetch, WebSearch, and NotebookEdit are blocked in this session — delegate them via the Agent tool.',
   'Every Agent dispatch must name a model explicitly: model="haiku" for simple/mechanical work, model="sonnet" for anything needing real judgement. Never omit model, never dispatch on opus.',
   'Bash stays open for orchestration (git, builds, tests, process control/flashing) — but prefer a delegated subagent over cat/grep/head/find for reading or searching files.',
+  'Answer minimally: report the outcome and anything the user must act on, nothing else. No preamble, no recap of what you just did, no summary tables, no options you did not take. Explain in technical depth only where the material genuinely requires it. Excessive text fatigues the user.',
 ].join(' ');
 
 function main(raw) {
