@@ -23,7 +23,7 @@ on `haiku` or `sonnet` instead of the model running the show.
 ## Install
 
 ```bash
-claude plugin marketplace add <your-github-username>/Optimus
+claude plugin marketplace add pietermyb/optimus
 claude plugin install optimus@Optimus
 ```
 
