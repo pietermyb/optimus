@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * Implementation behind `/optimus [on|off|status]`.
+ *
+ * This is invoked directly by the slash command's `!`-prefixed bash
+ * execution (see commands/optimus.md), so activation/deactivation is a
+ * deterministic file write done by this script — NOT something inferred
+ * by the model from free-text intent. That's a deliberate departure from
+ * how some other plugins persist slash-command state (regex-sniffing
+ * every user prompt in a separate hook): it's simpler and can't
+ * misfire on an unrelated sentence that happens to contain "off".
+ */
+
+const path = require('path');
+const { getConfig, setConfig, isKillSwitchActive, KILL_SWITCH_ENV } = require(
+  path.join(__dirname, '..', 'hooks', 'optimus-config.js')
+);
+
+const arg = (process.argv[2] || 'status').trim().toLowerCase();
+const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+function printStatus() {
+  const cfg = getConfig(cwd);
+  const killSwitch = isKillSwitchActive();
+  console.log('Optimus status for this project');
+  console.log('  project dir  : ' + cwd);
+  console.log(
+    '  config file  : ' +
+      (cfg.root ? path.join(cfg.root, '.optimus', 'config.json') : '(none yet — not activated in this project or any parent directory)')
+  );
+  console.log('  activated    : ' + (cfg.enabled ? 'YES — orchestrator role is enforced here' : 'no'));
+  console.log(
+    '  kill switch  : ' +
+      (killSwitch
+        ? 'ON (' + KILL_SWITCH_ENV + ' is set) — ALL enforcement is bypassed everywhere right now, regardless of the line above'
+        : 'off')
+  );
+}
+
+switch (arg) {
+  case 'on': {
+    const r = setConfig(cwd, true);
+    console.log('Optimus activated for ' + r.root);
+    console.log('Config written to ' + r.configPath);
+    console.log('');
+    printStatus();
+    break;
+  }
+  case 'off': {
+    const r = setConfig(cwd, false);
+    console.log('Optimus deactivated for ' + r.root);
+    console.log('');
+    printStatus();
+    break;
+  }
+  case 'status':
+  case '': {
+    printStatus();
+    break;
+  }
+  default: {
+    console.log('Usage: /optimus [on|off|status]');
+    console.log('');
+    printStatus();
+  }
+}

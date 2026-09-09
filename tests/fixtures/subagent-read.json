@@ -1,0 +1,12 @@
+{
+  "session_id": "test-session",
+  "transcript_path": "/tmp/does-not-exist.jsonl",
+  "cwd": "__PROJECT__",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Read",
+  "tool_input": { "file_path": "work.txt" },
+  "tool_use_id": "toolu_fixture_2",
+  "agent_id": "agent-fixture-1",
+  "agent_type": "general-purpose"
+}

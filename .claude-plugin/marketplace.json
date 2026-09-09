@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "Optimus",
+  "owner": {
+    "name": "Pieter Myburgh",
+    "url": "https://github.com/pietermyb"
+  },
+  "plugins": [
+    {
+      "name": "optimus",
+      "description": "Keeps an expensive orchestrator model doing orchestration, and pushes real work onto cheaper delegated subagents via hard-enforced hooks.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

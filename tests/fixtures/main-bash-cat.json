@@ -1,0 +1,10 @@
+{
+  "session_id": "test-session",
+  "transcript_path": "/tmp/does-not-exist.jsonl",
+  "cwd": "__PROJECT__",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "cat work.txt", "description": "read work.txt" },
+  "tool_use_id": "toolu_fixture_7"
+}
