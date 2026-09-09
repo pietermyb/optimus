@@ -2832,8 +2832,17 @@ git commit -m "feat: add Cursor reinforcement surface (alwaysApply rule + sessio
 ## Task 8: `optimus-cli install cursor`
 
 **Files:**
+- Modify: `hooks/optimus-config.js` (extract and export the atomic-write-refusing-symlinks primitive)
 - Modify: `bin/optimus-cli`
 - Create: `tests/run-install-tests.sh`
+
+> **Amended after the Task 8 review.** The first draft of this task had `bin/optimus-cli` carry its
+> own copy of the symlink-refusing atomic write, because `hooks/optimus-config.js` was a protected
+> file. The reviewer correctly called that out: it duplicates the single most security-relevant
+> primitive in the plugin across two files that can silently drift. So this task now extracts it
+> instead. `hooks/optimus-config.js` is unprotected **for this one extraction only** — `setConfig`'s
+> observable behaviour must not change, and `run-gate-tests.sh`, `run-ledger-tests.sh` and
+> `run-stats-tests.sh` all exercise it, so they are the regression check.
 
 **Interfaces:**
 - Consumes: `cursor/hooks.json` and `cursor/optimus.mdc` from Task 7; `getConfig`, `setConfig`, `isKillSwitchActive`, `KILL_SWITCH_ENV` from `hooks/optimus-config.js` (already imported).
@@ -2862,7 +2871,6 @@ fail=0
 
 ok()   { echo "PASS: $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL: $1"; fail=$((fail+1)); }
-check(){ if [ "$2" == "yes" ]; then ok "$1"; else bad "$1"; fi; }
 
 echo "== Optimus install tests =="
 
@@ -2924,7 +2932,36 @@ else
   ok "rejects an unknown install target"
 fi
 
-rm -rf "$W" "$W2" "$W3" "$W4" "$W5" "$W6"
+# --- an unreadable existing hooks.json must NOT be silently replaced ----
+# Treating "cannot read it" as "it is not there" would skip the overwrite
+# refusal, and rename() only needs write permission on the DIRECTORY — so the
+# user's own file would be replaced without them ever being asked.
+W7="$(mktemp -d)"; P7="$W7/project"; mkdir -p "$P7/.cursor"
+echo '{"version":1,"hooks":{"preToolUse":[{"command":"node theirs.js"}]}}' > "$P7/.cursor/hooks.json"
+chmod 000 "$P7/.cursor/hooks.json"
+if CURSOR_PROJECT_DIR="$P7" node "$CLI" install cursor >"$W7/out.txt" 2>&1; then
+  bad "install succeeded over an unreadable hooks.json"
+else
+  ok "refuses when the existing hooks.json cannot be read"
+fi
+chmod 644 "$P7/.cursor/hooks.json"
+grep -q 'theirs.js' "$P7/.cursor/hooks.json" && ok "left the unreadable file untouched" || bad "replaced the unreadable file"
+grep -qi 'install failed' "$W7/out.txt" && ok "prints a reason, not a stack trace" || bad "no clean failure message: $(cat "$W7/out.txt")"
+grep -q 'at Object' "$W7/out.txt" && bad "dumped a stack trace at the user" || ok "no stack trace in output"
+
+# --- a dangling symlink at the target fails cleanly ---------------------
+W8="$(mktemp -d)"; P8="$W8/project"; mkdir -p "$P8/.cursor"
+ln -s "$W8/nonexistent.json" "$P8/.cursor/hooks.json"
+if CURSOR_PROJECT_DIR="$P8" node "$CLI" install cursor >"$W8/out.txt" 2>&1; then
+  bad "install succeeded through a dangling symlink"
+else
+  ok "refuses a dangling symlink at the target"
+fi
+[ -L "$P8/.cursor/hooks.json" ] && ok "left the dangling symlink in place" || bad "removed the symlink"
+[ -e "$W8/nonexistent.json" ] && bad "wrote through the dangling symlink" || ok "did not write through the dangling symlink"
+grep -qi 'refusing to write through a symlink' "$W8/out.txt" && ok "names the symlink as the reason" || bad "unclear reason: $(cat "$W8/out.txt")"
+
+rm -rf "$W" "$W2" "$W3" "$W4" "$W5" "$W6" "$W7" "$W8"
 
 echo ""
 echo "== $pass passed, $fail failed =="
@@ -2940,7 +2977,58 @@ chmod +x tests/run-install-tests.sh
 
 Expected: FAIL — `install` falls through to the CLI's `default:` branch, so no files are written.
 
-- [ ] **Step 3: Extend `bin/optimus-cli`**
+- [ ] **Step 3: Extract the shared write primitive in `hooks/optimus-config.js`**
+
+`setConfig` already contains the exact write `bin/optimus-cli` needs. Lift it out rather than
+copying it. Replace the body of `setConfig` from its `try { const lst = fs.lstatSync(target); ... }`
+block through the `fs.renameSync(tmp, target);` line with a single call, and add the extracted
+function above it:
+
+```js
+/**
+ * Write `contents` to `target` atomically, refusing to follow a pre-existing
+ * symlink there.
+ *
+ * The symlink check is a cheap defence against a local symlink-plant aimed at
+ * tricking Optimus into writing through a link somewhere else; the temp-file-
+ * then-rename makes the replacement atomic so a reader never sees a partial
+ * file. Throws on a symlink at the target, and on any fs error other than the
+ * target simply not existing yet — callers decide how to present that.
+ *
+ * Exported because `bin/optimus-cli install cursor` writes into a user's
+ * project and needs exactly these two properties. It must never be duplicated:
+ * this is the most security-relevant primitive in the plugin, and two copies
+ * drift.
+ */
+function writeFileAtomicRefusingSymlink(target, contents, mode) {
+  try {
+    const lst = fs.lstatSync(target);
+    if (lst.isSymbolicLink()) {
+      throw new Error('Optimus: refusing to write through a symlink at ' + target);
+    }
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+
+  const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
+  fs.writeFileSync(tmp, contents, { mode: typeof mode === 'number' ? mode : 0o600, flag: 'wx' });
+  fs.renameSync(tmp, target);
+}
+```
+
+`setConfig`'s write becomes:
+
+```js
+  writeFileAtomicRefusingSymlink(target, payload);
+```
+
+and `writeFileAtomicRefusingSymlink` joins the `module.exports` list. Nothing else in
+`hooks/optimus-config.js` changes — `setConfig`'s signature, its return value, its
+`mkdirSync`, and its payload construction all stay exactly as they are. Its observable behaviour
+must be identical, which `run-gate-tests.sh`, `run-ledger-tests.sh` and `run-stats-tests.sh`
+between them prove.
+
+- [ ] **Step 4: Extend `bin/optimus-cli`**
 
 Replace the `cwd` line and the `switch` block. The header comment, the requires, and `printStatus()` stay exactly as they are, except that `printStatus()` gains two lines. New content for the file from the `cwd` assignment down:
 
@@ -2989,21 +3077,6 @@ function printStatus() {
   );
 }
 
-/** Atomic write that refuses to follow a pre-existing symlink at target. */
-function writeFileSafe(target, contents) {
-  try {
-    const lst = fs.lstatSync(target);
-    if (lst.isSymbolicLink()) {
-      throw new Error('Optimus: refusing to write through a symlink at ' + target);
-    }
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
-  const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
-  fs.writeFileSync(tmp, contents, { mode: 0o600, flag: 'wx' });
-  fs.renameSync(tmp, target);
-}
-
 function installCursor(force) {
   const template = fs.readFileSync(path.join(CURSOR_TEMPLATE_DIR, 'hooks.json'), 'utf8');
   const rendered = template.split(ROOT_PLACEHOLDER).join(PLUGIN_ROOT);
@@ -3023,13 +3096,19 @@ function installCursor(force) {
   try {
     existing = fs.readFileSync(hooksTarget, 'utf8');
   } catch (e) {
-    // no existing file — the clean path
+    // ENOENT is the clean path: there is nothing there to protect. Anything
+    // else (EACCES on a file we may not read, EISDIR, a dangling symlink's
+    // own ENOENT is indistinguishable and handled below) must NOT be
+    // swallowed: treating an unreadable file as absent would skip the
+    // overwrite refusal and let the rename replace it, which is exactly the
+    // guarantee this command exists to make.
+    if (e.code !== 'ENOENT') throw e;
   }
   const isOurs = existing !== null && existing.indexOf('optimus-gate-cursor.js') !== -1;
 
   if (existing !== null && !isOurs && !force) {
     const suggested = hooksTarget + '.optimus-suggested';
-    fs.writeFileSync(suggested, rendered, { mode: 0o600 });
+    writeFileAtomicRefusingSymlink(suggested, rendered);
     console.log('Optimus: ' + hooksTarget + ' already exists and was not written by Optimus.');
     console.log('Refusing to overwrite it — it may carry your own hook registrations, and this');
     console.log('command does not merge hook JSON.');
@@ -3043,16 +3122,16 @@ function installCursor(force) {
   }
 
   if (existing !== null) {
-    fs.unlinkSync(hooksTarget); // writeFileSafe uses flag 'wx'
+    fs.unlinkSync(hooksTarget); // the shared writer uses flag 'wx'
   }
-  writeFileSafe(hooksTarget, rendered);
+  writeFileAtomicRefusingSymlink(hooksTarget, rendered);
 
   try {
     fs.unlinkSync(ruleTarget);
   } catch (e) {
     // not there yet
   }
-  writeFileSafe(ruleTarget, rule);
+  writeFileAtomicRefusingSymlink(ruleTarget, rule);
 
   console.log('Optimus Cursor hooks installed for ' + cwd);
   console.log('  hooks : ' + hooksTarget);
@@ -3089,7 +3168,15 @@ switch (arg) {
     const target = (argv[1] || '').trim().toLowerCase();
     const force = argv.indexOf('--force') !== -1;
     if (target === 'cursor') {
-      installCursor(force);
+      try {
+        installCursor(force);
+      } catch (e) {
+        // A refusal (a symlink at a target path, an unreadable existing
+        // hooks.json) is a legitimate outcome, not a crash. Print the reason
+        // and exit non-zero rather than dumping a stack trace at the user.
+        console.log('Optimus: install failed — ' + (e && e.message ? e.message : e));
+        process.exit(1);
+      }
     } else {
       console.log('Usage: optimus-cli install cursor [--force]');
       console.log('');
@@ -3113,7 +3200,7 @@ switch (arg) {
 }
 ```
 
-- [ ] **Step 4: Run the install suite plus every other suite**
+- [ ] **Step 5: Run the install suite plus every other suite**
 
 ```bash
 ./tests/run-install-tests.sh
@@ -3124,7 +3211,7 @@ switch (arg) {
 
 Expected: `0 failed` in all of them. `run-gate-tests.sh` and `run-stats-tests.sh` exercise the CLI's `on`/`off` path, so they are the regression check on the changed `cwd` resolution.
 
-- [ ] **Step 5: Verify the real install end to end in Cursor**
+- [ ] **Step 6: Verify the real install end to end in Cursor**
 
 ```bash
 # in the scratch Cursor project from Task 4
@@ -3134,10 +3221,10 @@ node <plugin>/bin/optimus-cli on
 
 Reload the Cursor window, then in the main agent panel ask it to read a file. Expected: the read is denied and the agent is told to use the Task tool. Then confirm `.optimus/state/events.jsonl` in that project gained a `work_tool_denied` line. Record the result — a pass here is the first end-to-end proof the port works; a fail sends you back to `docs/cursor-probe-findings.md`, not to guesswork.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add bin/optimus-cli tests/run-install-tests.sh
+git add hooks/optimus-config.js bin/optimus-cli tests/run-install-tests.sh
 git commit -m "feat: add optimus-cli install cursor and Cursor-aware project resolution"
 ```
 
