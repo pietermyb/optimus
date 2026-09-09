@@ -2841,8 +2841,10 @@ git commit -m "feat: add Cursor reinforcement surface (alwaysApply rule + sessio
 > file. The reviewer correctly called that out: it duplicates the single most security-relevant
 > primitive in the plugin across two files that can silently drift. So this task now extracts it
 > instead. `hooks/optimus-config.js` is unprotected **for this one extraction only** — `setConfig`'s
-> observable behaviour must not change, and `run-gate-tests.sh`, `run-ledger-tests.sh` and
-> `run-stats-tests.sh` all exercise it, so they are the regression check.
+> observable behaviour must not change, and `run-gate-tests.sh` and `run-ledger-tests.sh` both
+> exercise it through `bin/optimus-cli on`/`off`, so they are the regression check. (`run-stats-tests.sh`
+> does NOT — `bin/optimus-stats` imports only `findProjectRoot` and `CONFIG_DIRNAME` from
+> `optimus-config.js` and never calls `setConfig`.)
 
 **Interfaces:**
 - Consumes: `cursor/hooks.json` and `cursor/optimus.mdc` from Task 7; `getConfig`, `setConfig`, `isKillSwitchActive`, `KILL_SWITCH_ENV` from `hooks/optimus-config.js` (already imported).
@@ -3025,8 +3027,8 @@ function writeFileAtomicRefusingSymlink(target, contents, mode) {
 and `writeFileAtomicRefusingSymlink` joins the `module.exports` list. Nothing else in
 `hooks/optimus-config.js` changes — `setConfig`'s signature, its return value, its
 `mkdirSync`, and its payload construction all stay exactly as they are. Its observable behaviour
-must be identical, which `run-gate-tests.sh`, `run-ledger-tests.sh` and `run-stats-tests.sh`
-between them prove.
+must be identical, which `run-gate-tests.sh` and `run-ledger-tests.sh` between them prove — both
+drive `bin/optimus-cli on`/`off`, which is the only caller of `setConfig`.
 
 - [ ] **Step 4: Extend `bin/optimus-cli`**
 
