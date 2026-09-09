@@ -3352,29 +3352,61 @@ pass unchanged.
 
 Three edits. Content, not paraphrase:
 
-**(a)** Replace the architecture file tree in the `## Architecture` section (line ~207) so it lists the new files:
+**(a)** Replace the architecture file tree in the `## Architecture` section (line ~207). This
+**extends** the existing tree — every entry already there must survive, including
+`.claude-plugin/`, `commands/`, `tests/`, `README.md`, `LICENSE` and `.gitignore`, and the existing
+box-drawing style. The tree's job is to map the whole repository; dropping entries to make room for
+new ones makes it a worse map, not a shorter one.
 
 ```
-hooks/
-  hooks.json                 Claude Code hook registration (name and path are load-bearing)
-  optimus-core.js            host-agnostic policy: work tools, expensive-model rule,
-                             shell-bypass patterns, check order, ledger event names
-  optimus-gate.js            Claude Code PreToolUse adapter (thin)
-  optimus-gate-cursor.js     Cursor preToolUse adapter (thin)
-  optimus-session-cursor.js  Cursor sessionStart one-shot reminder
-  optimus-subagent-cursor.js Cursor subagentStart/Stop sidecar writer (fallback path only)
-  optimus-sidecar.js         coarse "is any subagent outstanding" tracker (fallback path only)
-  optimus-reinforce.js       Claude Code UserPromptSubmit per-turn reminder
-  optimus-config.js          repo-local activation, kill switch, atomic config writes
-  optimus-ledger.js          append-only enforcement ledger
-cursor/
-  hooks.json                 Cursor registration template (__OPTIMUS_ROOT__ rendered at install)
-  optimus.mdc                alwaysApply rule — the single source of the Cursor reminder text
-  probe/                     hook-payload probe kit (see docs/cursor-probe-findings.md)
-bin/
-  optimus-cli                /optimus on|off|status, plus `install cursor`
-  optimus-stats              /optimus-stats
-  optimus-probe-report       analyses a Cursor probe log
+Optimus/
+├── .claude-plugin/
+│   ├── plugin.json          # plugin manifest — deliberately no "hooks" key, see below
+│   └── marketplace.json     # lets `claude plugin marketplace add <owner>/Optimus` find it
+├── hooks/
+│   ├── hooks.json           # THE conventional path Claude Code's hook loader honors
+│   ├── optimus-core.js      # shared: host-agnostic policy — work tools, expensive-model rule,
+│   │                        #   shell-bypass patterns, check order, ledger event names
+│   ├── optimus-gate.js      # Claude Code PreToolUse adapter (thin — parses/emits CC shapes)
+│   ├── optimus-gate-cursor.js    # Cursor preToolUse adapter (thin — parses/emits Cursor shapes)
+│   ├── optimus-session-cursor.js # Cursor sessionStart: one-shot policy injection
+│   ├── optimus-subagent-cursor.js # Cursor subagentStart/Stop: maintains the attribution sidecar
+│   ├── optimus-sidecar.js   # shared-by-Cursor: which conversation dispatched each live subagent
+│   ├── optimus-reinforce.js # Claude Code UserPromptSubmit: per-turn reminder (decays otherwise)
+│   ├── optimus-config.js    # shared: repo-local config resolution, kill switch, safe atomic writes
+│   └── optimus-ledger.js    # shared: append-only enforcement-event ledger, called from both gates
+├── cursor/
+│   ├── hooks.json           # Cursor registration template — __OPTIMUS_ROOT__ rendered at install
+│   ├── optimus.mdc          # alwaysApply rule, and the single source of the Cursor reminder text
+│   └── probe/               # hook-payload probe kit (see docs/cursor-probe-findings.md)
+├── bin/
+│   ├── optimus-cli          # /optimus on|off|status, plus `install cursor`
+│   ├── optimus-stats        # /optimus-stats — walks transcripts + the ledger, computes cost/savings
+│   └── optimus-probe-report # analyses a Cursor probe log into an Unknown-1/Unknown-2 verdict
+├── commands/
+│   ├── optimus.md           # /optimus — invokes bin/optimus-cli via PATH
+│   └── optimus-stats.md     # /optimus-stats — invokes bin/optimus-stats via PATH
+├── tests/
+│   ├── fixtures/*.json         # captured-shape Claude Code PreToolUse payloads
+│   ├── fixtures/cursor/*.json  # captured-shape Cursor preToolUse + subagent payloads
+│   ├── fixtures/probe/*.log    # synthetic probe logs for the analyser
+│   ├── run-all.sh              # runs every suite below, reporting anything it skipped
+│   ├── core-tests.js           # direct unit tests of optimus-core.js's decide()/ledgerEventFor()
+│   ├── run-core-tests.sh       # wrapper for core-tests.js
+│   ├── run-gate-tests.sh       # Claude Code adapter: allow/deny per fixture, plus deny wording
+│   ├── run-gate-cursor-tests.sh # Cursor adapter: shape translation, role attribution, ledger
+│   ├── run-session-cursor-tests.sh # Cursor sessionStart injection
+│   ├── run-sidecar-tests.sh    # sidecar lifecycle and the subagentStart/Stop hook
+│   ├── run-install-tests.sh    # optimus-cli install cursor, including its refusal paths
+│   ├── run-probe-report-tests.sh # the probe analyser against synthetic logs
+│   ├── run-ledger-tests.sh     # gate -> .optimus/state/events.jsonl
+│   └── run-stats-tests.sh      # synthetic transcripts + ledgers -> optimus-stats reporting
+├── docs/
+│   ├── cursor-support-spec.md     # the Cursor port's design spec
+│   └── cursor-probe-findings.md   # what Cursor's hooks empirically do — re-verify on upgrade
+├── README.md
+├── LICENSE
+└── .gitignore
 ```
 
 **(b)** Add a new `## Cursor` section immediately after `## Install`:
@@ -3394,7 +3426,9 @@ optimus-cli install cursor   # writes .cursor/hooks.json and .cursor/rules/optim
 optimus-cli on               # activates enforcement for this project
 ```
 
-Then reload the Cursor window so the hooks register.
+Cursor watches `.cursor/hooks.json` and reloads it on write, so the hooks take effect a second or
+two after the install command finishes — no window reload needed. The `alwaysApply` rule's pickup
+was not measured; if the policy reminder does not seem to be applying, reload the window.
 
 What differs from the Claude Code build, and why:
 
@@ -3416,18 +3450,12 @@ the hook in `.cursor/hooks.json`. That is the same deliberate tradeoff the
 kill switch exists for — a bug in Optimus must never wedge a session.
 ```
 
-If Task 6 ran, append to that section:
-
-```markdown
-On this Cursor version, `preToolUse` payloads carry nothing that
-distinguishes a subagent's own tool calls from the orchestrator's, so
-Optimus falls back to tracking whether *any* subagent is outstanding
-(`subagentStart`/`subagentStop` write marker files under
-`.optimus/state/active-subagents/`). Enforcement is therefore **suspended
-while any subagent is outstanding** — coarser than the Claude Code build,
-where the exemption is per-call. A main-session tool call made while a
-subagent is running is not blocked. See `docs/cursor-probe-findings.md`.
-```
+**Do NOT add any paragraph describing enforcement as "suspended while any subagent is
+outstanding".** An earlier draft of this plan carried one, written before the probe, when the spec
+still expected the coarse row-2 fallback. The probe established that `conversation_id` discriminates,
+so the shipped sidecar does exact per-call attribution and the orchestrator's own calls stay enforced
+while a subagent runs. The accurate description is edit (d)'s "How Optimus tells your subagents apart
+on Cursor" subsection below, and it is the only one that may appear.
 
 **(c)** Add to `## Known limitations` (line ~346):
 
