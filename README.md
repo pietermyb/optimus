@@ -33,6 +33,103 @@ For local development, or to try it without publishing anywhere:
 claude --plugin-dir /path/to/Optimus
 ```
 
+## Cursor
+
+Optimus runs on Cursor as well as Claude Code. Both hosts share one policy
+core (`hooks/optimus-core.js`), so the rules are identical by construction
+rather than by discipline; only the payload parsing and the output shape
+differ per host.
+
+Install into a Cursor project:
+
+```bash
+optimus-cli install cursor   # writes .cursor/hooks.json and .cursor/rules/optimus.mdc
+optimus-cli on               # activates enforcement for this project
+```
+
+Then reload the Cursor window so the hooks register.
+
+What differs from the Claude Code build, and why:
+
+| | Claude Code | Cursor |
+|---|---|---|
+| Enforcement point | `PreToolUse` hook | `preToolUse` hook |
+| Dispatch tool | `Agent` | `Task` |
+| Shell tool | `Bash` | `Shell` |
+| `Delete` tool | does not exist | treated as a work tool — delegate deletions |
+| Per-turn reminder | `UserPromptSubmit` re-injects every turn | Cursor has no equivalent event. Turn one comes from a `sessionStart` hook; every turn after it comes from the `alwaysApply` rule at `.cursor/rules/optimus.mdc` |
+| Hook path resolution | `${CLAUDE_PLUGIN_ROOT}` | absolute paths baked in at install time, so `.cursor/hooks.json` is machine-specific — re-run `install cursor` after moving the plugin |
+| `/optimus-stats` | full report | enforcement-ledger counts only. Cursor's transcript format is undocumented, so the requested-vs-actual model comparison correctly reports no data rather than guessing |
+| Model-conditional enforcement | not possible — `PreToolUse` carries no model field | possible: Cursor payloads carry the live session model. Opt in per project with `"modelConditional": true` in `.optimus/config.json`. Off by default so both hosts behave the same out of the box |
+
+Both hosts fail open: a crash in the hook allows the call rather than
+blocking it. On Cursor that also means a broken hook results in
+enforcement silently not applying, unless you set `"failClosed": true` on
+the hook in `.cursor/hooks.json`. That is the same deliberate tradeoff the
+kill switch exists for — a bug in Optimus must never wedge a session.
+
+On this Cursor version, `preToolUse` payloads carry nothing that
+distinguishes a subagent's own tool calls from the orchestrator's, so
+Optimus falls back to tracking whether *any* subagent is outstanding
+(`subagentStart`/`subagentStop` write marker files under
+`.optimus/state/active-subagents/`). Enforcement is therefore **suspended
+while any subagent is outstanding** — coarser than the Claude Code build,
+where the exemption is per-call. A main-session tool call made while a
+subagent is running is not blocked. See `docs/cursor-probe-findings.md`.
+
+### How Optimus tells your subagents apart on Cursor
+
+Cursor sends nothing on a tool-call hook that marks the call as a subagent's — the payload from a
+subagent is shaped exactly like the orchestrator's. What it does send is `conversation_id`, and a
+subagent gets its own. So Optimus records the dispatching conversation for the lifetime of each
+subagent (`subagentStart` → `subagentStop`, one small file per outstanding subagent under
+`.optimus/state/active-subagents/`) and treats any *other* conversation as a subagent's while a
+dispatch is outstanding. That is exact per-call attribution, and it is safe with any number of
+subagents running at once.
+
+Two limits worth knowing:
+
+- **Two Cursor windows on the same project.** If window A has a subagent outstanding, window B's
+  own tool calls look like a subagent's and are not enforced. Fail-open, and the kill switch or
+  `/optimus off` behave normally.
+- **A subagent that dispatches its own subagent** would have its own calls enforced. Nested
+  dispatch was not observed on Cursor 3.19.13 and is not supported by this build.
+
+### Cursor quirks Optimus works around
+
+- **Denying `Read` also blocks writes to files that already exist**, because Cursor issues an
+  internal `Read` of the target before a `Write`. This is not something Optimus can separate;
+  read-scoped and write-scoped policy are not independent on Cursor. It does not change anything
+  for Optimus, which denies both in the orchestrator anyway.
+- **Web search and URL fetch write to a cache** under
+  `~/.cursor/projects/<workspace>/agent-tools/`, and those writes fire the tool hook as `Write`.
+  Optimus needs no path exemption for them: `WebFetch`/`WebSearch` are themselves delegated work,
+  so the orchestrator never gets as far as the cache write, and inside a subagent both the fetch
+  and its cache write are exempt.
+- **Turning the hooks off means writing an empty config, not deleting the file.** Cursor watches
+  `.cursor/hooks.json` for writes and reloads on save — no window reload needed — but deleting it
+  does not deregister anything. `{"version": 1, "hooks": {}}` clears them.
+- **Debugging the gate:** Cursor writes every hook invocation, with `INPUT`, `OUTPUT` and
+  `STDERR`, to
+  `~/Library/Application Support/Cursor/logs/<session>/window<N>/output_<ts>/cursor.hooks.workspaceId-<id>.log`.
+  Start there, not with guesswork. Re-verify the findings in `docs/cursor-probe-findings.md` from
+  that log after a Cursor upgrade.
+- **A dispatch with `model: "inherit"` is blocked**, the same as one that names no model at all —
+  `inherit` means the subagent runs on the orchestrator's expensive model, which is the exact thing
+  the rule exists to prevent.
+
+### If you have the Claude Code plugin installed and you use Cursor
+
+Cursor reads Claude Code plugin manifests. With no `.cursor/hooks.json` at all, it finds Optimus's
+`hooks/hooks.json`, maps `PreToolUse` onto its own `preToolUse`, resolves `${CLAUDE_PLUGIN_ROOT}`,
+and runs `hooks/optimus-gate.js` on every matched tool call.
+
+**That hook is a silent no-op on Cursor, and its deny path fails open.** Its allow path is Claude
+Code's "emit nothing", which Cursor also reads as allow, so allows happen to work. But a deny emits
+`hookSpecificOutput.permissionDecision: "deny"`, which Cursor does not understand — it logs "none
+returned a valid response" and lets the call through. So if you have the plugin and you are working
+in Cursor, you are not enforced until you run `optimus-cli install cursor`, and nothing warns you.
+
 ## Per-project activation
 
 Optimus does nothing until you turn it on, and it's **per project, not
@@ -207,30 +304,26 @@ assuming Optimus can do more than it actually can.
 ## Architecture
 
 ```
-Optimus/
-├── .claude-plugin/
-│   ├── plugin.json          # plugin manifest — deliberately no "hooks" key, see below
-│   └── marketplace.json     # lets `claude plugin marketplace add <owner>/Optimus` find it
-├── hooks/
-│   ├── hooks.json           # THE conventional path Claude Code's hook loader honors
-│   ├── optimus-gate.js      # PreToolUse: subagent exemption, work-tool deny, Agent model check, Bash speed bump
-│   ├── optimus-reinforce.js # UserPromptSubmit: per-turn policy reminder (decays otherwise, see below)
-│   ├── optimus-config.js    # shared: repo-local config resolution, kill-switch check, safe file I/O
-│   └── optimus-ledger.js    # shared: append-only enforcement-event ledger, called from optimus-gate.js
-├── bin/
-│   ├── optimus-cli          # implementation behind /optimus — reads or writes .optimus/config.json
-│   └── optimus-stats        # implementation behind /optimus-stats — walks transcripts + the ledger, computes cost/savings/enforcement counts
-├── commands/
-│   ├── optimus.md           # /optimus — invokes bin/optimus-cli via PATH
-│   └── optimus-stats.md     # /optimus-stats — invokes bin/optimus-stats via PATH
-├── tests/
-│   ├── fixtures/*.json      # captured-shape PreToolUse payloads (main session, subagent, Agent dispatches, Bash)
-│   ├── run-gate-tests.sh    # feeds each fixture to optimus-gate.js and checks the allow/deny outcome
-│   ├── run-ledger-tests.sh  # feeds fixtures through the gate and inspects the resulting .optimus/state/events.jsonl
-│   └── run-stats-tests.sh   # synthetic transcripts + ledgers; checks optimus-stats' project-dir resolution and reporting
-├── README.md
-├── LICENSE
-└── .gitignore
+hooks/
+  hooks.json                 Claude Code hook registration (name and path are load-bearing)
+  optimus-core.js            host-agnostic policy: work tools, expensive-model rule,
+                             shell-bypass patterns, check order, ledger event names
+  optimus-gate.js            Claude Code PreToolUse adapter (thin)
+  optimus-gate-cursor.js     Cursor preToolUse adapter (thin)
+  optimus-session-cursor.js  Cursor sessionStart one-shot reminder
+  optimus-subagent-cursor.js Cursor subagentStart/Stop sidecar writer (fallback path only)
+  optimus-sidecar.js         coarse "is any subagent outstanding" tracker (fallback path only)
+  optimus-reinforce.js       Claude Code UserPromptSubmit per-turn reminder
+  optimus-config.js          repo-local activation, kill switch, atomic config writes
+  optimus-ledger.js          append-only enforcement ledger
+cursor/
+  hooks.json                 Cursor registration template (__OPTIMUS_ROOT__ rendered at install)
+  optimus.mdc                alwaysApply rule — the single source of the Cursor reminder text
+  probe/                     hook-payload probe kit (see docs/cursor-probe-findings.md)
+bin/
+  optimus-cli                /optimus on|off|status, plus `install cursor`
+  optimus-stats              /optimus-stats
+  optimus-probe-report       analyses a Cursor probe log
 ```
 
 A project that activates Optimus also gets a small amount of runtime state
@@ -383,6 +476,21 @@ A few properties of this file are load-bearing, not incidental:
   on the dollar figures for anything that matters. Cache-token pricing
   specifically is an assumption (standard published multipliers), not
   independently re-verified.
+- **Cursor's hook payload fields are undocumented where Optimus depends on
+  them.** The subagent-identity field the Cursor gate keys on, and the
+  plugin-root resolution behaviour the installer works around, were both
+  established empirically — see `docs/cursor-probe-findings.md` and
+  `cursor/probe/`. Neither is versioned upstream. Re-run
+  `bin/optimus-probe-report` against a fresh probe log after every Cursor
+  upgrade; a silently renamed field degrades enforcement rather than
+  announcing itself.
+- **`.cursor/hooks.json` contains absolute paths.** It is generated per
+  machine by `optimus-cli install cursor` and should generally not be
+  committed to a shared repository.
+- **Org-managed Cursor installs can shadow or block this entirely.**
+  Enterprise and Team `hooks.json` take precedence over Project and User
+  `hooks.json`, and "Allow Local Plugin Imports" is off by default on
+  Enterprise. Both look identical to "Optimus is broken".
 
 ## License
 

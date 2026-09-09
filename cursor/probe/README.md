@@ -11,6 +11,9 @@ Section 5 and open decision (a).
   looks identical to a broken hook.
 - Enterprise and Team `hooks.json` take precedence over Project and User
   `hooks.json`. If nothing logs, rule this out before concluding anything.
+- The fastest debugging surface is Cursor's own hooks log at
+  `~/Library/Application Support/Cursor/logs/<session>/window<N>/output_<ts>/cursor.hooks.workspaceId-<id>.log`,
+  which records `INPUT`, `OUTPUT` and `STDERR` per invocation.
 
 ## Unknown 1 — subagent distinguishability
 
@@ -22,14 +25,21 @@ Section 5 and open decision (a).
    If Cursor rejects the file, fix the schema against your installed
    version and record what you changed — the shape in that file is taken
    from documentation, not from a verified install.
-4. Reload the Cursor window so the hook registers.
+4. Save the file and allow a couple of seconds to settle; Cursor watches
+   `hooks.json` and reloads on write. No window reload is needed. Note that
+   **deleting** `hooks.json` does NOT deregister its hooks — to turn them
+   off, write `{"version": 1, "hooks": {}}`.
 5. `: > <scratch>/.cursor/probe/probe.log`
 6. In the main agent panel, ask it to read `probe-target.txt`. Confirm a
    line landed in `probe.log`. **If nothing landed, stop here** — fix
    registration before continuing; every later step depends on it.
 7. Dispatch the `file-reader` subagent (via `/file-reader`, or by asking
    for a Task with `subagent_type: file-reader`) and have it read
-   `probe-target.txt`.
+   `probe-target.txt`. Note: project-level agent definitions in
+   `.cursor/agents/` do NOT hot-reload, so a freshly written one is
+   rejected with an `Invalid enum value` listing the built-in types.
+   Either reload the window or use a built-in type such as `explore`,
+   which answers the Unknown-1 question identically.
 8. `node bin/optimus-probe-report <scratch>/.cursor/probe/probe.log`
 
 ## Unknown 2 — plugin root
@@ -57,6 +67,9 @@ After each pass: reload the window, trigger any tool call, then check
 that is itself the finding for that variable. Also check Cursor's own
 hook-error surface (output panel / notifications) and record whatever it
 says verbatim.
+
+Clear or move `probe-root.log` between Pass A and Pass B, otherwise a
+`__dirname`-only result cannot be attributed to either variable.
 
 Then: `node bin/optimus-probe-report <scratch>/.cursor/probe/probe-root.log`
 

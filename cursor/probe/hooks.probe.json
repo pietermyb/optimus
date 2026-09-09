@@ -2,7 +2,13 @@
   "version": 1,
   "hooks": {
     "preToolUse": [
-      { "command": "node \"${workspaceFolder}/.cursor/probe/probe.js\"" }
+      { "command": "node \".cursor/probe/probe.js\"", "matcher": "Read" }
+    ],
+    "subagentStart": [
+      { "command": "node \".cursor/probe/probe.js\"" }
+    ],
+    "subagentStop": [
+      { "command": "node \".cursor/probe/probe.js\"" }
     ]
   }
 }
