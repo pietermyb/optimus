@@ -1427,7 +1427,7 @@ git commit -m "docs: record Cursor hook probe findings"
 |---|---|
 | row 1 — distinguishing field | Task 5, then 7, 8, 9. **Skip Task 6.** |
 | row 3 — subagent calls do not fire `preToolUse` | Task 5, then 7, 8, 9. Skip Task 6. `isSubagentPayload()` returns `false` always, and that is correct: if the hook never fires for a subagent, every payload it does see is the orchestrator's. Record that reasoning in the adapter's header comment. |
-| row 2 — no distinguishing field | Task 6 **before** Task 5, then 5, 7, 8, 9. |
+| row 2 — no distinguishing field | Task 5 first, then Task 6, then 7, 8, 9. Task 6 patches and re-tests the file Task 5 creates, so it cannot precede it. |
 | row 4 — enforcement unreliable under subagents | **Stop.** Hard enforcement is not viable on Cursor. Do Task 7 (rules only), Task 8 (installing rules + `sessionStart` only), Task 9 — and state plainly in the README that the Cursor build is advisory, not enforced. Do not ship a gate that only sometimes blocks. |
 
 ---
@@ -3036,6 +3036,6 @@ Every section of `docs/cursor-support-spec.md` mapped to the task that implement
 
 ## Execution
 
-Task order: **1 → 2 → 3 → 4 (human) → [6 if row 2] → 5 → 7 → 8 → 9**.
+Task order: **1 → 2 → 3 → 4 (human) → 5 → [6 if row 2] → 7 → 8 → 9**.
 
 Tasks 1–2 and Task 3 are independent of each other and may run in parallel. Task 4 is a hard checkpoint — an agent must hand back there.
