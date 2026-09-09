@@ -1,6 +1,6 @@
 {
   "name": "optimus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keeps an expensive orchestrator model doing orchestration, and pushes real work onto cheaper delegated subagents via hard-enforced hooks.",
   "author": {
     "name": "Pieter Myburgh"
