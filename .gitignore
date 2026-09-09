@@ -2,3 +2,7 @@
 node_modules/
 *.log
 .optimus/
+
+# Generated per-project by `optimus-cli install cursor`; hooks.json bakes in
+# absolute machine-specific paths. The tracked templates live in cursor/.
+.cursor/
