@@ -285,4 +285,4 @@ proactively instead of only after being denied once).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPLv3 — see [LICENSE](LICENSE).

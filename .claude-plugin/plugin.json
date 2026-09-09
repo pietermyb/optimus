@@ -6,6 +6,6 @@
     "name": "Pieter Myburgh"
   },
   "homepage": "https://github.com/pietermyb/Optimus",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "keywords": ["orchestration", "cost", "subagents", "hooks", "delegation"]
 }
