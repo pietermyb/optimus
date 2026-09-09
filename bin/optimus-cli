@@ -18,8 +18,19 @@ const { getConfig, setConfig, isKillSwitchActive, KILL_SWITCH_ENV } = require(
   path.join(__dirname, '..', 'hooks', 'optimus-config.js')
 );
 
-const arg = (process.argv[2] || 'status').trim().toLowerCase();
-const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const argv = process.argv.slice(2);
+const arg = (argv[0] || 'status').trim().toLowerCase();
+
+// CURSOR_PROJECT_DIR first, then CLAUDE_PROJECT_DIR (documented as
+// present in Cursor "for compatibility", and what Claude Code sets), then
+// the process cwd. Both hosts therefore resolve "this project" the same
+// way, which is what lets `on`/`off`/`status` work unchanged inside Cursor.
+const cwd = process.env.CURSOR_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+const fs = require('fs');
+const PLUGIN_ROOT = path.join(__dirname, '..');
+const CURSOR_TEMPLATE_DIR = path.join(PLUGIN_ROOT, 'cursor');
+const ROOT_PLACEHOLDER = '__OPTIMUS_ROOT__';
 
 function printStatus() {
   const cfg = getConfig(cwd);
@@ -37,6 +48,98 @@ function printStatus() {
         ? 'ON (' + KILL_SWITCH_ENV + ' is set) — ALL enforcement is bypassed everywhere right now, regardless of the line above'
         : 'off')
   );
+  console.log(
+    '  cursor hooks : ' +
+      (fs.existsSync(path.join(cwd, '.cursor', 'hooks.json'))
+        ? 'installed at ' + path.join(cwd, '.cursor', 'hooks.json')
+        : 'not installed (run `optimus-cli install cursor`)')
+  );
+  console.log(
+    '  enforcement  : role-based' +
+      (cfg.raw && cfg.raw.modelConditional
+        ? ' + model-conditional (Cursor only — the gate stands down when the session model is not the expensive tier)'
+        : '')
+  );
+}
+
+/** Atomic write that refuses to follow a pre-existing symlink at target. */
+function writeFileSafe(target, contents) {
+  try {
+    const lst = fs.lstatSync(target);
+    if (lst.isSymbolicLink()) {
+      throw new Error('Optimus: refusing to write through a symlink at ' + target);
+    }
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+  const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
+  fs.writeFileSync(tmp, contents, { mode: 0o600, flag: 'wx' });
+  fs.renameSync(tmp, target);
+}
+
+function installCursor(force) {
+  const template = fs.readFileSync(path.join(CURSOR_TEMPLATE_DIR, 'hooks.json'), 'utf8');
+  const rendered = template.split(ROOT_PLACEHOLDER).join(PLUGIN_ROOT);
+  const rule = fs.readFileSync(path.join(CURSOR_TEMPLATE_DIR, 'optimus.mdc'), 'utf8');
+
+  const cursorDir = path.join(cwd, '.cursor');
+  const rulesDir = path.join(cursorDir, 'rules');
+  const hooksTarget = path.join(cursorDir, 'hooks.json');
+  const ruleTarget = path.join(rulesDir, 'optimus.mdc');
+
+  fs.mkdirSync(rulesDir, { recursive: true });
+
+  // Never silently overwrite someone else's hook registrations. This CLI
+  // does not merge JSON — inferring a merge of a user's own hooks is how
+  // you silently disable their tooling.
+  let existing = null;
+  try {
+    existing = fs.readFileSync(hooksTarget, 'utf8');
+  } catch (e) {
+    // no existing file — the clean path
+  }
+  const isOurs = existing !== null && existing.indexOf('optimus-gate-cursor.js') !== -1;
+
+  if (existing !== null && !isOurs && !force) {
+    const suggested = hooksTarget + '.optimus-suggested';
+    fs.writeFileSync(suggested, rendered, { mode: 0o600 });
+    console.log('Optimus: ' + hooksTarget + ' already exists and was not written by Optimus.');
+    console.log('Refusing to overwrite it — it may carry your own hook registrations, and this');
+    console.log('command does not merge hook JSON.');
+    console.log('');
+    console.log('What Optimus would have written is here instead:');
+    console.log('  ' + suggested);
+    console.log('');
+    console.log('Merge the "preToolUse" and "sessionStart" entries into your own file, or re-run');
+    console.log('with --force to replace it.');
+    process.exit(1);
+  }
+
+  if (existing !== null) {
+    fs.unlinkSync(hooksTarget); // writeFileSafe uses flag 'wx'
+  }
+  writeFileSafe(hooksTarget, rendered);
+
+  try {
+    fs.unlinkSync(ruleTarget);
+  } catch (e) {
+    // not there yet
+  }
+  writeFileSafe(ruleTarget, rule);
+
+  console.log('Optimus Cursor hooks installed for ' + cwd);
+  console.log('  hooks : ' + hooksTarget);
+  console.log('  rule  : ' + ruleTarget);
+  console.log('  plugin root baked into the hook commands: ' + PLUGIN_ROOT);
+  console.log('');
+  console.log('Note: those command paths are absolute and therefore machine-specific.');
+  console.log('Re-run this command after moving or reinstalling the plugin, and think twice');
+  console.log('before committing .cursor/hooks.json to a shared repository.');
+  console.log('');
+  console.log('Reload the Cursor window to register the hooks, then run `optimus-cli on`');
+  console.log('in this project to activate enforcement.');
+  console.log('');
+  printStatus();
 }
 
 switch (arg) {
@@ -55,6 +158,20 @@ switch (arg) {
     printStatus();
     break;
   }
+  case 'install': {
+    const target = (argv[1] || '').trim().toLowerCase();
+    const force = argv.indexOf('--force') !== -1;
+    if (target === 'cursor') {
+      installCursor(force);
+    } else {
+      console.log('Usage: optimus-cli install cursor [--force]');
+      console.log('');
+      console.log('Claude Code needs no install step — the plugin ships hooks/hooks.json,');
+      console.log('which Claude Code loads from the plugin itself.');
+      process.exit(1);
+    }
+    break;
+  }
   case 'status':
   case '': {
     printStatus();
@@ -62,6 +179,7 @@ switch (arg) {
   }
   default: {
     console.log('Usage: /optimus [on|off|status]');
+    console.log('       optimus-cli install cursor [--force]');
     console.log('');
     printStatus();
   }
