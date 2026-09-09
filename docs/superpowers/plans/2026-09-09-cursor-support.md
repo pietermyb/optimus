@@ -2458,13 +2458,16 @@ function main(raw) {
   // activation gate rather than before it, because unlike Claude Code's
   // agent_id field this costs a directory read — and there is nothing to
   // exempt in a project where Optimus is not active anyway.
-  let isSubagent = false;
-  try {
-    isSubagent = isSubagentConversation(payload.cwd, payload.conversation_id);
-  } catch (e) {
-    isSubagent = false; // enforce rather than exempt if attribution fails
-  }
-  if (isSubagent) return allow();
+  //
+  // Deliberately NOT wrapped in a local try/catch. isSubagentConversation
+  // never throws by contract, and if it somehow did, the right response is
+  // the file-wide one: the top-level handler emits an explicit allow. A
+  // local catch would have to pick a direction, and both are wrong here —
+  // "enforce" deadlocks a real subagent (the exact failure the spec warns
+  // loudest about) and "exempt" silently switches enforcement off. Letting
+  // it reach the outer handler keeps one fail-open policy for the whole
+  // file instead of two.
+  if (isSubagentConversation(payload.cwd, payload.conversation_id)) return allow();
 
   const tool = normalizeTool(payload.tool_name);
   const toolInput = normalizeInput(tool, payload.tool_input);
