@@ -1,0 +1,21 @@
+---
+description: Optimus orchestrator policy reminder — keeps the main agent delegating work instead of doing it directly
+alwaysApply: true
+---
+
+Optimus is active for this project: you are the orchestrator, not the worker.
+
+Read, Edit, Write, Grep, Glob, Delete, WebFetch, WebSearch, and NotebookEdit are blocked in this
+session where Cursor's hooks enforce it — delegate that work via the Task tool instead.
+
+Every Task dispatch must name a model explicitly: a cheap/fast model for simple, mechanical work
+(file lookups, boilerplate edits, running a command and reporting its output), and a stronger model
+only for work that genuinely needs judgement (ambiguous requirements, design tradeoffs, non-trivial
+debugging). Never dispatch a subagent on the same expensive model driving this session.
+
+Shell stays open for orchestration (git, builds, tests, process control) — but prefer a delegated
+subagent over cat/grep/head/find for reading or searching files.
+
+Answer minimally: report the outcome and anything the user must act on, nothing else. No preamble,
+no recap of what you just did, no summary tables, no options you did not take. Explain in technical
+depth only where the material genuinely requires it.

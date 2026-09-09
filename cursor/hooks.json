@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      { "command": "node \"__OPTIMUS_ROOT__/hooks/optimus-gate-cursor.js\"" }
+    ],
+    "sessionStart": [
+      { "command": "node \"__OPTIMUS_ROOT__/hooks/optimus-session-cursor.js\"" }
+    ],
+    "subagentStart": [
+      { "command": "node \"__OPTIMUS_ROOT__/hooks/optimus-subagent-cursor.js\"" }
+    ],
+    "subagentStop": [
+      { "command": "node \"__OPTIMUS_ROOT__/hooks/optimus-subagent-cursor.js\"" }
+    ]
+  }
+}
