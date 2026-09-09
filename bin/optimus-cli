@@ -14,7 +14,7 @@
  */
 
 const path = require('path');
-const { getConfig, setConfig, isKillSwitchActive, KILL_SWITCH_ENV } = require(
+const { getConfig, setConfig, isKillSwitchActive, KILL_SWITCH_ENV, writeFileAtomicRefusingSymlink } = require(
   path.join(__dirname, '..', 'hooks', 'optimus-config.js')
 );
 
@@ -62,21 +62,6 @@ function printStatus() {
   );
 }
 
-/** Atomic write that refuses to follow a pre-existing symlink at target. */
-function writeFileSafe(target, contents) {
-  try {
-    const lst = fs.lstatSync(target);
-    if (lst.isSymbolicLink()) {
-      throw new Error('Optimus: refusing to write through a symlink at ' + target);
-    }
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
-  const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
-  fs.writeFileSync(tmp, contents, { mode: 0o600, flag: 'wx' });
-  fs.renameSync(tmp, target);
-}
-
 function installCursor(force) {
   const template = fs.readFileSync(path.join(CURSOR_TEMPLATE_DIR, 'hooks.json'), 'utf8');
   const rendered = template.split(ROOT_PLACEHOLDER).join(PLUGIN_ROOT);
@@ -96,13 +81,19 @@ function installCursor(force) {
   try {
     existing = fs.readFileSync(hooksTarget, 'utf8');
   } catch (e) {
-    // no existing file — the clean path
+    // ENOENT is the clean path: there is nothing there to protect. Anything
+    // else (EACCES on a file we may not read, EISDIR, a dangling symlink's
+    // own ENOENT is indistinguishable and handled below) must NOT be
+    // swallowed: treating an unreadable file as absent would skip the
+    // overwrite refusal and let the rename replace it, which is exactly the
+    // guarantee this command exists to make.
+    if (e.code !== 'ENOENT') throw e;
   }
   const isOurs = existing !== null && existing.indexOf('optimus-gate-cursor.js') !== -1;
 
   if (existing !== null && !isOurs && !force) {
     const suggested = hooksTarget + '.optimus-suggested';
-    fs.writeFileSync(suggested, rendered, { mode: 0o600 });
+    writeFileAtomicRefusingSymlink(suggested, rendered);
     console.log('Optimus: ' + hooksTarget + ' already exists and was not written by Optimus.');
     console.log('Refusing to overwrite it — it may carry your own hook registrations, and this');
     console.log('command does not merge hook JSON.');
@@ -116,16 +107,16 @@ function installCursor(force) {
   }
 
   if (existing !== null) {
-    fs.unlinkSync(hooksTarget); // writeFileSafe uses flag 'wx'
+    fs.unlinkSync(hooksTarget); // the shared writer uses flag 'wx'
   }
-  writeFileSafe(hooksTarget, rendered);
+  writeFileAtomicRefusingSymlink(hooksTarget, rendered);
 
   try {
     fs.unlinkSync(ruleTarget);
   } catch (e) {
     // not there yet
   }
-  writeFileSafe(ruleTarget, rule);
+  writeFileAtomicRefusingSymlink(ruleTarget, rule);
 
   console.log('Optimus Cursor hooks installed for ' + cwd);
   console.log('  hooks : ' + hooksTarget);
@@ -162,7 +153,15 @@ switch (arg) {
     const target = (argv[1] || '').trim().toLowerCase();
     const force = argv.indexOf('--force') !== -1;
     if (target === 'cursor') {
-      installCursor(force);
+      try {
+        installCursor(force);
+      } catch (e) {
+        // A refusal (a symlink at a target path, an unreadable existing
+        // hooks.json) is a legitimate outcome, not a crash. Print the reason
+        // and exit non-zero rather than dumping a stack trace at the user.
+        console.log('Optimus: install failed — ' + (e && e.message ? e.message : e));
+        process.exit(1);
+      }
     } else {
       console.log('Usage: optimus-cli install cursor [--force]');
       console.log('');

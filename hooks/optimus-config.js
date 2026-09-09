@@ -107,6 +107,36 @@ function getConfig(cwd) {
 }
 
 /**
+ * Write `contents` to `target` atomically, refusing to follow a pre-existing
+ * symlink there.
+ *
+ * The symlink check is a cheap defence against a local symlink-plant aimed at
+ * tricking Optimus into writing through a link somewhere else; the temp-file-
+ * then-rename makes the replacement atomic so a reader never sees a partial
+ * file. Throws on a symlink at the target, and on any fs error other than the
+ * target simply not existing yet — callers decide how to present that.
+ *
+ * Exported because `bin/optimus-cli install cursor` writes into a user's
+ * project and needs exactly these two properties. It must never be duplicated:
+ * this is the most security-relevant primitive in the plugin, and two copies
+ * drift.
+ */
+function writeFileAtomicRefusingSymlink(target, contents, mode) {
+  try {
+    const lst = fs.lstatSync(target);
+    if (lst.isSymbolicLink()) {
+      throw new Error('Optimus: refusing to write through a symlink at ' + target);
+    }
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+
+  const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
+  fs.writeFileSync(tmp, contents, { mode: typeof mode === 'number' ? mode : 0o600, flag: 'wx' });
+  fs.renameSync(tmp, target);
+}
+
+/**
  * Activate/deactivate Optimus for the project rooted at `cwd` (written
  * directly at that directory, not walked up — "this project", explicitly).
  * Atomic write; refuses to write through a pre-existing symlink.
@@ -116,15 +146,6 @@ function setConfig(cwd, enabled) {
   const dir = path.join(root, CONFIG_DIRNAME);
   fs.mkdirSync(dir, { recursive: true });
   const target = path.join(dir, CONFIG_FILENAME);
-
-  try {
-    const lst = fs.lstatSync(target);
-    if (lst.isSymbolicLink()) {
-      throw new Error('Optimus: refusing to write through a symlink at ' + target);
-    }
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
 
   const payload =
     JSON.stringify(
@@ -136,9 +157,7 @@ function setConfig(cwd, enabled) {
       2
     ) + '\n';
 
-  const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
-  fs.writeFileSync(tmp, payload, { mode: 0o600, flag: 'wx' });
-  fs.renameSync(tmp, target);
+  writeFileAtomicRefusingSymlink(target, payload);
 
   return { root, enabled: !!enabled, configPath: target };
 }
@@ -148,6 +167,7 @@ module.exports = {
   getConfig,
   setConfig,
   findProjectRoot,
+  writeFileAtomicRefusingSymlink,
   WORK_TOOLS,
   EXPENSIVE_MODEL_RE,
   CONFIG_DIRNAME,

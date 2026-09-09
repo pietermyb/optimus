@@ -10,7 +10,6 @@ fail=0
 
 ok()   { echo "PASS: $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL: $1"; fail=$((fail+1)); }
-check(){ if [ "$2" == "yes" ]; then ok "$1"; else bad "$1"; fi; }
 
 echo "== Optimus install tests =="
 
@@ -72,7 +71,36 @@ else
   ok "rejects an unknown install target"
 fi
 
-rm -rf "$W" "$W2" "$W3" "$W4" "$W5" "$W6"
+# --- an unreadable existing hooks.json must NOT be silently replaced ----
+# Treating "cannot read it" as "it is not there" would skip the overwrite
+# refusal, and rename() only needs write permission on the DIRECTORY — so the
+# user's own file would be replaced without them ever being asked.
+W7="$(mktemp -d)"; P7="$W7/project"; mkdir -p "$P7/.cursor"
+echo '{"version":1,"hooks":{"preToolUse":[{"command":"node theirs.js"}]}}' > "$P7/.cursor/hooks.json"
+chmod 000 "$P7/.cursor/hooks.json"
+if CURSOR_PROJECT_DIR="$P7" node "$CLI" install cursor >"$W7/out.txt" 2>&1; then
+  bad "install succeeded over an unreadable hooks.json"
+else
+  ok "refuses when the existing hooks.json cannot be read"
+fi
+chmod 644 "$P7/.cursor/hooks.json"
+grep -q 'theirs.js' "$P7/.cursor/hooks.json" && ok "left the unreadable file untouched" || bad "replaced the unreadable file"
+grep -qi 'install failed' "$W7/out.txt" && ok "prints a reason, not a stack trace" || bad "no clean failure message: $(cat "$W7/out.txt")"
+grep -q 'at Object' "$W7/out.txt" && bad "dumped a stack trace at the user" || ok "no stack trace in output"
+
+# --- a dangling symlink at the target fails cleanly ---------------------
+W8="$(mktemp -d)"; P8="$W8/project"; mkdir -p "$P8/.cursor"
+ln -s "$W8/nonexistent.json" "$P8/.cursor/hooks.json"
+if CURSOR_PROJECT_DIR="$P8" node "$CLI" install cursor >"$W8/out.txt" 2>&1; then
+  bad "install succeeded through a dangling symlink"
+else
+  ok "refuses a dangling symlink at the target"
+fi
+[ -L "$P8/.cursor/hooks.json" ] && ok "left the dangling symlink in place" || bad "removed the symlink"
+[ -e "$W8/nonexistent.json" ] && bad "wrote through the dangling symlink" || ok "did not write through the dangling symlink"
+grep -qi 'refusing to write through a symlink' "$W8/out.txt" && ok "names the symlink as the reason" || bad "unclear reason: $(cat "$W8/out.txt")"
+
+rm -rf "$W" "$W2" "$W3" "$W4" "$W5" "$W6" "$W7" "$W8"
 
 echo ""
 echo "== $pass passed, $fail failed =="
