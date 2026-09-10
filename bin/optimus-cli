@@ -69,9 +69,6 @@ function installCursor(force) {
   // `message`, so a warning here is the worst case, not a crash.
   const pathResult = installCliPath({ binDir: path.resolve(__dirname) });
   console.log(pathResult.message);
-  if (pathResult.error) {
-    console.log('Optimus: warning - ' + pathResult.error);
-  }
   console.log('');
 
   const template = fs.readFileSync(path.join(CURSOR_TEMPLATE_DIR, 'hooks.json'), 'utf8');
@@ -179,10 +176,7 @@ switch (arg) {
       // without touching Cursor hooks at all).
       const r = installCliPath({ binDir: path.resolve(__dirname) });
       console.log(r.message);
-      if (r.error) {
-        console.log('Optimus: warning - ' + r.error);
-      }
-      process.exit(0);
+      process.exit(r.changed || r.alreadyPresent ? 0 : 1);
     } else {
       console.log('Usage: optimus-cli install cursor [--force]');
       console.log('       optimus-cli install path');

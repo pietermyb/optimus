@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Runs every Optimus test suite and reports the result of each. All nine
+# Runs every Optimus test suite and reports the result of each. All ten
 # suites listed below — including the Cursor sidecar suite, which the probe
-# made the permanent shipped mechanism rather than a conditional fallback —
-# are unconditionally present in this repo, so the per-suite existence
-# check should never actually trigger. It stays in place as a backstop: if
-# a suite is ever missing, this reports that suite as SKIPPED instead of
+# made the permanent shipped mechanism rather than a conditional fallback,
+# and the PATH install suite covering hooks/install-path.js — are
+# unconditionally present in this repo, so the per-suite existence check
+# should never actually trigger. It stays in place as a backstop: if a
+# suite is ever missing, this reports that suite as SKIPPED instead of
 # silently doing nothing.
 set -uo pipefail
 
@@ -19,6 +20,7 @@ SUITES=(
   run-gate-cursor-tests.sh
   run-session-cursor-tests.sh
   run-install-tests.sh
+  run-path-install-tests.sh
   run-sidecar-tests.sh
 )
 
