@@ -27,7 +27,7 @@ claude plugin marketplace add pietermyb/optimus
 claude plugin install optimus@Optimus
 ```
 
-Cursor users can skip straight to npm: `npm install -g @pietermyb/optimus` (see [Cursor](#cursor) below).
+Cursor users: install from GitHub (see [Cursor](#cursor) below).
 
 For local development, or to try it without publishing anywhere:
 
@@ -42,10 +42,10 @@ core (`hooks/optimus-core.js`), so the rules are identical by construction
 rather than by discipline; only the payload parsing and the output shape
 differ per host.
 
-The easy path is npm — installs `optimus-cli`/`optimus-stats` on `PATH` directly, no shell-profile bootstrapping needed:
+The easy path is a global install from GitHub — puts `optimus-cli`/`optimus-stats` on `PATH` directly, no shell-profile bootstrapping needed:
 
 ```bash
-npm install -g @pietermyb/optimus
+npm install -g git+https://github.com/pietermyb/optimus.git
 cd your-project
 optimus-cli install cursor
 optimus-cli on
@@ -54,11 +54,11 @@ optimus-cli on
 One-shot, without a global install:
 
 ```bash
-npx -p @pietermyb/optimus optimus-cli install cursor
-npx -p @pietermyb/optimus optimus-cli on
+npx -p github:pietermyb/optimus optimus-cli install cursor
+npx -p github:pietermyb/optimus optimus-cli on
 ```
 
-`npx` writes hook paths in `.cursor/hooks.json` that point into the ephemeral npm cache, so prefer `npm install -g @pietermyb/optimus`; if the npx cache is cleared, re-run `optimus-cli install cursor`.
+`npx` writes hook paths in `.cursor/hooks.json` that point into the ephemeral npm cache (the cloned GitHub checkout), so prefer `npm install -g git+https://github.com/pietermyb/optimus.git`; if the npx cache is cleared, re-run `optimus-cli install cursor`.
 
 `install cursor` writes `.cursor/hooks.json` and `.cursor/rules/optimus.mdc` into the current project (determined by the `CURSOR_PROJECT_DIR` environment variable or current working directory), so run it from the project directory you want to enforce Optimus in, or set `CURSOR_PROJECT_DIR` explicitly. Hooks reload automatically on write; the rule may still need a **Developer: Reload Window** command in Cursor to take effect.
 
