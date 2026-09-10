@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Tests for `optimus-cli install cursor`.
+#
+# Every invocation below pins HOME to that test's own temp dir. Since
+# `install cursor` now also runs the PATH setup step (hooks/install-path.js),
+# an unpinned HOME would append a real PATH block to this machine's actual
+# shell profile on every test run — that must never happen.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,7 +20,7 @@ echo "== Optimus install tests =="
 
 # --- clean install ------------------------------------------------------
 W="$(mktemp -d)"; P="$W/project"; mkdir -p "$P"
-CURSOR_PROJECT_DIR="$P" node "$CLI" install cursor >"$W/out.txt" 2>&1 || bad "clean install exited non-zero"
+CURSOR_PROJECT_DIR="$P" HOME="$W" node "$CLI" install cursor >"$W/out.txt" 2>&1 || bad "clean install exited non-zero"
 [ -f "$P/.cursor/hooks.json" ] && ok "writes .cursor/hooks.json" || bad "no .cursor/hooks.json"
 [ -f "$P/.cursor/rules/optimus.mdc" ] && ok "writes .cursor/rules/optimus.mdc" || bad "no rules/optimus.mdc"
 grep -q '__OPTIMUS_ROOT__' "$P/.cursor/hooks.json" && bad "placeholder left unrendered" || ok "placeholder rendered"
@@ -29,7 +34,7 @@ grep -q '"enabled": true' "$P/.optimus/config.json" 2>/dev/null && bad "install 
 # --- refuses to clobber a foreign hooks.json ---------------------------
 W2="$(mktemp -d)"; P2="$W2/project"; mkdir -p "$P2/.cursor"
 echo '{"version":1,"hooks":{"preToolUse":[{"command":"node other.js"}]}}' > "$P2/.cursor/hooks.json"
-if CURSOR_PROJECT_DIR="$P2" node "$CLI" install cursor >"$W2/out.txt" 2>&1; then
+if CURSOR_PROJECT_DIR="$P2" HOME="$W2" node "$CLI" install cursor >"$W2/out.txt" 2>&1; then
   bad "did not refuse an existing hooks.json"
 else
   ok "refuses an existing hooks.json"
@@ -38,13 +43,13 @@ grep -q 'other.js' "$P2/.cursor/hooks.json" && ok "left the existing file untouc
 [ -f "$P2/.cursor/hooks.json.optimus-suggested" ] && ok "wrote the .optimus-suggested sidecar" || bad "no suggested file"
 
 # --- --force overwrites -------------------------------------------------
-CURSOR_PROJECT_DIR="$P2" node "$CLI" install cursor --force >/dev/null 2>&1 || bad "--force exited non-zero"
+CURSOR_PROJECT_DIR="$P2" HOME="$W2" node "$CLI" install cursor --force >/dev/null 2>&1 || bad "--force exited non-zero"
 grep -q 'optimus-gate-cursor.js' "$P2/.cursor/hooks.json" && ok "--force overwrites" || bad "--force did not overwrite"
 
 # --- re-install over our own file is idempotent, no --force needed -----
 W3="$(mktemp -d)"; P3="$W3/project"; mkdir -p "$P3"
-CURSOR_PROJECT_DIR="$P3" node "$CLI" install cursor >/dev/null 2>&1
-if CURSOR_PROJECT_DIR="$P3" node "$CLI" install cursor >/dev/null 2>&1; then
+CURSOR_PROJECT_DIR="$P3" HOME="$W3" node "$CLI" install cursor >/dev/null 2>&1
+if CURSOR_PROJECT_DIR="$P3" HOME="$W3" node "$CLI" install cursor >/dev/null 2>&1; then
   ok "re-installing over our own hooks.json succeeds"
 else
   bad "re-install needed --force"
@@ -54,12 +59,12 @@ fi
 W4="$(mktemp -d)"; P4="$W4/project"; mkdir -p "$P4/.cursor"
 : > "$W4/elsewhere.json"
 ln -s "$W4/elsewhere.json" "$P4/.cursor/hooks.json"
-CURSOR_PROJECT_DIR="$P4" node "$CLI" install cursor --force >/dev/null 2>&1 || true
+CURSOR_PROJECT_DIR="$P4" HOME="$W4" node "$CLI" install cursor --force >/dev/null 2>&1 || true
 [ -s "$W4/elsewhere.json" ] && bad "wrote through a symlink" || ok "refuses to write through a symlink"
 
 # --- CURSOR_PROJECT_DIR wins over CLAUDE_PROJECT_DIR -------------------
 W5="$(mktemp -d)"; mkdir -p "$W5/cursor-target" "$W5/claude-target"
-CURSOR_PROJECT_DIR="$W5/cursor-target" CLAUDE_PROJECT_DIR="$W5/claude-target" node "$CLI" install cursor >/dev/null 2>&1
+CURSOR_PROJECT_DIR="$W5/cursor-target" CLAUDE_PROJECT_DIR="$W5/claude-target" HOME="$W5" node "$CLI" install cursor >/dev/null 2>&1
 [ -f "$W5/cursor-target/.cursor/hooks.json" ] && ok "CURSOR_PROJECT_DIR takes precedence" || bad "wrong target dir"
 [ -f "$W5/claude-target/.cursor/hooks.json" ] && bad "also wrote to CLAUDE_PROJECT_DIR" || ok "did not write to CLAUDE_PROJECT_DIR"
 
@@ -78,7 +83,7 @@ fi
 W7="$(mktemp -d)"; P7="$W7/project"; mkdir -p "$P7/.cursor"
 echo '{"version":1,"hooks":{"preToolUse":[{"command":"node theirs.js"}]}}' > "$P7/.cursor/hooks.json"
 chmod 000 "$P7/.cursor/hooks.json"
-if CURSOR_PROJECT_DIR="$P7" node "$CLI" install cursor >"$W7/out.txt" 2>&1; then
+if CURSOR_PROJECT_DIR="$P7" HOME="$W7" node "$CLI" install cursor >"$W7/out.txt" 2>&1; then
   bad "install succeeded over an unreadable hooks.json"
 else
   ok "refuses when the existing hooks.json cannot be read"
@@ -91,7 +96,7 @@ grep -q 'at Object' "$W7/out.txt" && bad "dumped a stack trace at the user" || o
 # --- a dangling symlink at the target fails cleanly ---------------------
 W8="$(mktemp -d)"; P8="$W8/project"; mkdir -p "$P8/.cursor"
 ln -s "$W8/nonexistent.json" "$P8/.cursor/hooks.json"
-if CURSOR_PROJECT_DIR="$P8" node "$CLI" install cursor >"$W8/out.txt" 2>&1; then
+if CURSOR_PROJECT_DIR="$P8" HOME="$W8" node "$CLI" install cursor >"$W8/out.txt" 2>&1; then
   bad "install succeeded through a dangling symlink"
 else
   ok "refuses a dangling symlink at the target"

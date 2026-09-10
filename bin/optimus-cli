@@ -17,6 +17,7 @@ const path = require('path');
 const { getConfig, setConfig, isKillSwitchActive, KILL_SWITCH_ENV, writeFileAtomicRefusingSymlink } = require(
   path.join(__dirname, '..', 'hooks', 'optimus-config.js')
 );
+const { installCliPath } = require(path.join(__dirname, '..', 'hooks', 'install-path.js'));
 
 const argv = process.argv.slice(2);
 const arg = (argv[0] || 'status').trim().toLowerCase();
@@ -63,6 +64,16 @@ function printStatus() {
 }
 
 function installCursor(force) {
+  // PATH setup is best-effort and must never abort the hook install below —
+  // installCliPath() already catches its own failures and reports them via
+  // `message`, so a warning here is the worst case, not a crash.
+  const pathResult = installCliPath({ binDir: path.resolve(__dirname) });
+  console.log(pathResult.message);
+  if (pathResult.error) {
+    console.log('Optimus: warning - ' + pathResult.error);
+  }
+  console.log('');
+
   const template = fs.readFileSync(path.join(CURSOR_TEMPLATE_DIR, 'hooks.json'), 'utf8');
   const rendered = template.split(ROOT_PLACEHOLDER).join(PLUGIN_ROOT);
   const rule = fs.readFileSync(path.join(CURSOR_TEMPLATE_DIR, 'optimus.mdc'), 'utf8');
@@ -162,11 +173,26 @@ switch (arg) {
         console.log('Optimus: install failed — ' + (e && e.message ? e.message : e));
         process.exit(1);
       }
+    } else if (target === 'path') {
+      // PATH-only setup, for anyone who already ran `install cursor` before
+      // this subcommand existed (or who just wants optimus-cli on PATH
+      // without touching Cursor hooks at all).
+      const r = installCliPath({ binDir: path.resolve(__dirname) });
+      console.log(r.message);
+      if (r.error) {
+        console.log('Optimus: warning - ' + r.error);
+      }
+      process.exit(0);
     } else {
       console.log('Usage: optimus-cli install cursor [--force]');
+      console.log('       optimus-cli install path');
       console.log('');
       console.log('Claude Code needs no install step — the plugin ships hooks/hooks.json,');
       console.log('which Claude Code loads from the plugin itself.');
+      console.log('');
+      console.log('`install path` adds this plugin\'s bin/ directory to PATH (a shell profile');
+      console.log('block on macOS/Linux, the User PATH env var on Windows) so `optimus-cli`');
+      console.log('works by bare name in new shells. `install cursor` runs it automatically.');
       process.exit(1);
     }
     break;
@@ -179,6 +205,7 @@ switch (arg) {
   default: {
     console.log('Usage: /optimus [on|off|status]');
     console.log('       optimus-cli install cursor [--force]');
+    console.log('       optimus-cli install path');
     console.log('');
     printStatus();
   }
