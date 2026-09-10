@@ -27,6 +27,8 @@ claude plugin marketplace add pietermyb/optimus
 claude plugin install optimus@Optimus
 ```
 
+Cursor users can skip straight to npm: `npm install -g @pietermyb/optimus` (see [Cursor](#cursor) below).
+
 For local development, or to try it without publishing anywhere:
 
 ```bash
@@ -40,16 +42,34 @@ core (`hooks/optimus-core.js`), so the rules are identical by construction
 rather than by discipline; only the payload parsing and the output shape
 differ per host.
 
-Install into a Cursor project:
+The easy path is npm — installs `optimus-cli`/`optimus-stats` on `PATH` directly, no shell-profile bootstrapping needed:
 
 ```bash
-optimus-cli install cursor   # writes .cursor/hooks.json and .cursor/rules/optimus.mdc
-optimus-cli on               # activates enforcement for this project
+npm install -g @pietermyb/optimus
+cd your-project
+optimus-cli install cursor
+optimus-cli on
 ```
 
-Cursor watches `.cursor/hooks.json` and reloads it on write, so the hooks take effect a second or
-two after the install command finishes — no window reload needed. The `alwaysApply` rule's pickup
-was not measured; if the policy reminder does not seem to be applying, reload the window.
+One-shot, without a global install:
+
+```bash
+npx -p @pietermyb/optimus optimus-cli install cursor
+npx -p @pietermyb/optimus optimus-cli on
+```
+
+`npx` writes hook paths in `.cursor/hooks.json` that point into the ephemeral npm cache, so prefer `npm install -g @pietermyb/optimus`; if the npx cache is cleared, re-run `optimus-cli install cursor`.
+
+`install cursor` writes `.cursor/hooks.json` and `.cursor/rules/optimus.mdc` into the current project (determined by the `CURSOR_PROJECT_DIR` environment variable or current working directory), so run it from the project directory you want to enforce Optimus in, or set `CURSOR_PROJECT_DIR` explicitly. Hooks reload automatically on write; the rule may still need a **Developer: Reload Window** command in Cursor to take effect.
+
+For local development, or a checkout without npm, clone and invoke via `node` directly:
+
+```bash
+git clone https://github.com/pietermyb/optimus.git
+cd optimus   # or cd into your project and use an absolute path to optimus/bin
+node bin/optimus-cli install cursor
+node bin/optimus-cli on
+```
 
 What differs from the Claude Code build, and why:
 

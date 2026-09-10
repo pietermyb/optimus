@@ -1,0 +1,48 @@
+{
+  "name": "@pietermyb/optimus",
+  "version": "0.3.0",
+  "description": "Keeps an expensive orchestrator model doing orchestration, and pushes real work onto cheaper delegated subagents via hard-enforced hooks.",
+  "author": {
+    "name": "Pieter Myburgh",
+    "email": "pietermyb@gmail.com"
+  },
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/pietermyb/optimus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pietermyb/optimus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pietermyb/optimus/issues"
+  },
+  "keywords": [
+    "orchestration",
+    "cost",
+    "subagents",
+    "hooks",
+    "delegation",
+    "cursor",
+    "claude-code"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "private": false,
+  "bin": {
+    "optimus-cli": "bin/optimus-cli",
+    "optimus-stats": "bin/optimus-stats"
+  },
+  "files": [
+    "bin",
+    "hooks",
+    "cursor",
+    "commands",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "hooks/optimus-core.js",
+  "scripts": {
+    "test": "./tests/run-all.sh"
+  }
+}
