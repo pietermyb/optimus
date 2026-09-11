@@ -725,11 +725,23 @@ function main() {
   const delegatedUsage = {};
   const dispatchesByType = {};
   const dispatchesByModel = {};
+  const coordinatorUsage = {};
+  let coordinatorCycles = 0;
+  let coordinatorUnresolved = 0;
   let dispatchCount = 0;
 
   for (const name of sessionFiles) {
     const sessionId = name.replace(/\.jsonl$/, '');
-    readAssistantUsage(path.join(projectDir, name), orchestratorUsage);
+    const sessionPath = path.join(projectDir, name);
+    readAssistantUsage(sessionPath, orchestratorUsage);
+
+    const coord = coordinatorUsageFor(sessionPath);
+    coordinatorCycles += coord.cycles;
+    coordinatorUnresolved += coord.unresolved;
+    for (const [model, u] of Object.entries(coord.byModel)) {
+      if (!coordinatorUsage[model]) coordinatorUsage[model] = emptyUsage();
+      addUsage(coordinatorUsage[model], u);
+    }
 
     const subagentsDir = path.join(projectDir, sessionId, 'subagents');
     let subFiles = [];
@@ -812,14 +824,32 @@ function main() {
         (u.cache_creation_input_tokens / 1e6) * opusPricing.input * CACHE_WRITE_MULT +
         (u.cache_read_input_tokens / 1e6) * opusPricing.input * CACHE_READ_MULT;
     }
-    const saving = hypotheticalOpusCost - delegatedCost;
+    const grossSaving = hypotheticalOpusCost - delegatedCost;
+
+    // Priced at the ORCHESTRATOR's own model rate, not the subagent's:
+    // these tokens were billed to the main session.
+    let coordinatorCost = 0;
+    for (const [model, u] of Object.entries(coordinatorUsage)) {
+      coordinatorCost += costFor(model, u) || 0;
+    }
+    const netSaving = grossSaving - coordinatorCost;
+
     console.log('Estimated saving vs. running delegated work on the expensive (opus) tier:');
     console.log('  actual delegated cost     : $' + delegatedCost.toFixed(4));
     console.log('  hypothetical cost on opus : $' + hypotheticalOpusCost.toFixed(4) + '  (same measured token counts, re-priced at opus rates)');
-    console.log('  estimated saving          : $' + saving.toFixed(4));
+    console.log('  estimated saving (gross)  : $' + grossSaving.toFixed(4));
+    console.log('  coordinator overhead      : $' + coordinatorCost.toFixed(4) +
+      '  (' + coordinatorCycles + ' dispatch cycles: cache_write on dispatch + cache_read on summary, at the orchestrator\'s own rate)');
+    console.log('  estimated saving (net)    : $' + netSaving.toFixed(4) + '  (gross minus coordinator overhead)');
+    if (coordinatorUnresolved > 0) {
+      console.log('  ' + coordinatorUnresolved + ' dispatch(es) had no matching tool_result and contributed dispatch-side tokens only.');
+    }
     console.log('  ESTIMATE, not a fact: assumes opus would have used the same token volume for the same work.');
     console.log('  Real savings may differ — a bigger model can sometimes solve a task in fewer turns/tokens,');
     console.log('  or a smaller model may need more turns to reach the same result.');
+    console.log('  The net figure additionally assumes coordinator dispatch/summary tokens are correctly');
+    console.log('  attributable from the transcript\'s block structure; it may miss orchestration overhead');
+    console.log('  spent mid-conversation that is not adjacent to a dispatch.');
   }
 }
 

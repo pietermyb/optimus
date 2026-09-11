@@ -371,6 +371,74 @@ else
 fi
 
 echo ""
+echo "== Optimus stats: gross/coordinator/net savings output =="
+
+CFG_NET="$WORKDIR/cfg-net-savings"
+mkdir -p "$CFG_NET/projects"
+TARGET_CWD_NET="$WORKDIR/net-savings-project"
+SLUG_NET="$(correct_slug "$TARGET_CWD_NET")"
+PROJECTS_NET="$CFG_NET/projects"
+mkdir -p "$PROJECTS_NET/$SLUG_NET"
+SESSION_NET="$PROJECTS_NET/$SLUG_NET/session-net.jsonl"
+write_assistant_line   "$SESSION_NET" "$TARGET_CWD_NET" "claude-opus-5" 100 50 0 0
+write_tool_use_line    "$SESSION_NET" "$TARGET_CWD_NET" "claude-opus-5" "tu-net-1" "claude-haiku-4-5" 4000
+write_tool_result_line "$SESSION_NET" "$TARGET_CWD_NET" "tu-net-1"
+write_assistant_line   "$SESSION_NET" "$TARGET_CWD_NET" "claude-opus-5" 0 20 0 8000
+write_subagent_transcript "$PROJECTS_NET/$SLUG_NET/session-net/subagents" "1" "claude-haiku-4-5"
+
+out_net="$(run_stats "$CFG_NET" "$TARGET_CWD_NET")"
+for needle in \
+  "estimated saving (gross)" \
+  "coordinator overhead" \
+  "estimated saving (net)" \
+  "ESTIMATE, not a fact: assumes opus would have used the same token volume for the same work." \
+  "Real savings may differ — a bigger model can sometimes solve a task in fewer turns/tokens," \
+  "or a smaller model may need more turns to reach the same result." \
+  "net figure additionally assumes"
+do
+  if echo "$out_net" | grep -qF "$needle"; then
+    echo "PASS: output contains '$needle'"; pass=$((pass+1))
+  else
+    echo "FAIL: output missing '$needle'"; fail=$((fail+1))
+  fi
+done
+
+gross_net="$(echo "$out_net" | sed -n 's/.*estimated saving (gross) *: \$//p')"
+coord_net="$(echo "$out_net" | sed -n 's/.*coordinator overhead *: \$//p')"
+net_net="$(echo "$out_net" | sed -n 's/.*estimated saving (net) *: \$//p')"
+if node -e 'const [g,c,n]=process.argv.slice(1).map(Number); if (Math.abs((g-c)-n) > 1e-4) process.exit(1)' "$gross_net" "$coord_net" "$net_net"; then
+  echo "PASS: net saving equals gross minus coordinator"; pass=$((pass+1))
+else
+  echo "FAIL: net saving arithmetic ($gross_net - $coord_net != $net_net)"; fail=$((fail+1))
+fi
+
+CFG_NET_NONE="$WORKDIR/cfg-net-savings-none"
+mkdir -p "$CFG_NET_NONE/projects"
+TARGET_CWD_NET_NONE="$WORKDIR/net-savings-none-project"
+SLUG_NET_NONE="$(correct_slug "$TARGET_CWD_NET_NONE")"
+PROJECTS_NET_NONE="$CFG_NET_NONE/projects"
+mkdir -p "$PROJECTS_NET_NONE/$SLUG_NET_NONE"
+SESSION_NET_NONE="$PROJECTS_NET_NONE/$SLUG_NET_NONE/session-net-none.jsonl"
+write_assistant_line "$SESSION_NET_NONE" "$TARGET_CWD_NET_NONE" "claude-opus-5" 100 50 0 0
+write_subagent_transcript "$PROJECTS_NET_NONE/$SLUG_NET_NONE/session-net-none/subagents" "1" "claude-haiku-4-5"
+
+out_net_none="$(run_stats "$CFG_NET_NONE" "$TARGET_CWD_NET_NONE")"
+if echo "$out_net_none" | grep -qF "coordinator overhead      : \$0.0000"; then
+  echo "PASS: no-dispatch run reports zero coordinator overhead"; pass=$((pass+1))
+else
+  echo "FAIL: no-dispatch run did not report zero coordinator overhead"; fail=$((fail+1))
+fi
+
+gross_net_none="$(echo "$out_net_none" | sed -n 's/.*estimated saving (gross) *: \$//p')"
+coord_net_none="$(echo "$out_net_none" | sed -n 's/.*coordinator overhead *: \$//p')"
+net_net_none="$(echo "$out_net_none" | sed -n 's/.*estimated saving (net) *: \$//p')"
+if node -e 'const [g,c,n]=process.argv.slice(1).map(Number); if (Math.abs((g-c)-n) > 1e-4 || Math.abs(c) > 1e-9) process.exit(1)' "$gross_net_none" "$coord_net_none" "$net_net_none"; then
+  echo "PASS: no-dispatch net saving equals gross"; pass=$((pass+1))
+else
+  echo "FAIL: no-dispatch arithmetic ($gross_net_none - $coord_net_none != $net_net_none)"; fail=$((fail+1))
+fi
+
+echo ""
 echo "== Optimus stats: enforcement ledger reporting =="
 
 # Every case below needs a *real* target-project directory (not just a
