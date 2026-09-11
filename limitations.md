@@ -41,8 +41,8 @@
 - **Cursor's hook payload fields are undocumented where Optimus depends on
   them.** The subagent-identity field the Cursor gate keys on, and the
   plugin-root resolution behaviour the installer works around, were both
-  established empirically — see `docs/cursor-probe-findings.md` and
-  `cursor/probe/`. Neither is versioned upstream. Re-run
+  established empirically — see `cursor/probe/`. Neither is versioned
+  upstream. Re-run
   `bin/optimus-probe-report` against a fresh probe log after every Cursor
   upgrade; a silently renamed field degrades enforcement rather than
   announcing itself.
@@ -97,5 +97,5 @@ beyond what was configured.
 window or session instance would need a window/instance identifier in the
 hook payload, which Cursor does not currently send. Whether Cursor exposes
 one anywhere the probe hasn't yet checked is an open question for a future
-probe run (see `docs/cursor-probe-findings.md` and `cursor/probe/`); until
-one is confirmed, the single-window assumption stands.
+probe run (see `cursor/probe/`); until one is confirmed, the single-window
+assumption stands.
