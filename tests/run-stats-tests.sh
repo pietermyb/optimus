@@ -645,6 +645,144 @@ check_contains "(k) non-drift: no 'counts differ' claim"  "$CFG_K" "$PROJ_K" "" 
 check_contains "(k) non-drift: no approximate-caveat noise" "$CFG_K" "$PROJ_K" "" "CAVEAT"
 
 echo ""
+echo "== Optimus stats: pricingFor resolves short tier labels =="
+
+# pricingFor(model) must resolve BOTH a short tier label ("opus"/"sonnet"/
+# "haiku" -- what expensiveTierModel defaults to and what the scaffold
+# writes) AND a full PRICING-key model string (with or without a version
+# suffix), and must return null -- never a silently wrong price -- for
+# anything it does not recognize.
+if node -e '
+  const s = require(process.argv[1]);
+  function expectPrice(model, input, output) {
+    const p = s.pricingFor(model);
+    if (!p) throw new Error("pricingFor(" + JSON.stringify(model) + ") returned null");
+    if (p.input !== input || p.output !== output) {
+      throw new Error("pricingFor(" + JSON.stringify(model) + ") = " + JSON.stringify(p));
+    }
+  }
+  expectPrice("opus", 5.0, 25.0);
+  expectPrice("sonnet", 2.0, 10.0);
+  expectPrice("haiku", 1.0, 5.0);
+  expectPrice("claude-opus-5", 5.0, 25.0);
+  expectPrice("claude-sonnet-5", 2.0, 10.0);
+  expectPrice("claude-haiku-4-5", 1.0, 5.0);
+  expectPrice("claude-opus-5-20260101", 5.0, 25.0);
+  if (s.pricingFor("gpt-5") !== null) throw new Error("unknown full model string should return null");
+  if (s.pricingFor("mystery-tier") !== null) throw new Error("unknown short label should return null");
+  if (s.pricingFor("") !== null) throw new Error("empty string should return null");
+  if (s.pricingFor(null) !== null) throw new Error("null should return null");
+  console.log("ok");
+' "$STATS" | grep -q ok; then
+  echo "PASS: pricingFor resolves short tier labels and full model strings"; pass=$((pass+1))
+else
+  echo "FAIL: pricingFor short-label/full-string resolution is wrong"; fail=$((fail+1))
+fi
+if node -e '
+  const s = require(process.argv[1]);
+  if (s.pricingFor("gpt-5") !== null) throw new Error("expected null");
+  if (s.pricingFor("mystery-tier") !== null) throw new Error("expected null");
+  console.log("ok");
+' "$STATS" | grep -q ok; then
+  echo "PASS: an unknown label (short or full) still returns null, never a wrong price"; pass=$((pass+1))
+else
+  echo "FAIL: an unknown label did not return null"; fail=$((fail+1))
+fi
+
+echo ""
+echo "== Optimus stats: configurable expensive tier (expensiveTierModel) =="
+
+# -- baseline label and pricing key come from config, replacing the
+#    hardcoded "opus" framing -- the plan's own regression test.
+CFG_TIER="$WORKDIR/cfg-tier-label"
+PROJ_TIER="$WORKDIR/tier-label-project"
+mkdir -p "$PROJ_TIER/.optimus"
+cat >"$PROJ_TIER/.optimus/config.json" <<'JSON'
+{"enabled":true,"updatedAt":"2026-09-11T00:00:00.000Z","expensiveTierModel":"claude-sonnet-5"}
+JSON
+mkdir -p "$CFG_TIER/projects"
+SLUG_TIER="$(correct_slug "$PROJ_TIER")"
+mkdir -p "$CFG_TIER/projects/$SLUG_TIER"
+write_assistant_line "$CFG_TIER/projects/$SLUG_TIER/session-tier.jsonl" "$PROJ_TIER" "claude-opus-5" 100 50 0 0
+write_subagent_transcript "$CFG_TIER/projects/$SLUG_TIER/session-tier/subagents" "1" "claude-haiku-4-5"
+
+out_tier="$(run_stats "$CFG_TIER" "$PROJ_TIER")"
+for needle in \
+  "vs. running delegated work on the expensive (claude-sonnet-5) tier" \
+  "hypothetical cost on claude-sonnet-5" \
+  "re-priced at claude-sonnet-5 rates" \
+  "assumes claude-sonnet-5 would have used"
+do
+  if echo "$out_tier" | grep -qF "$needle"; then
+    echo "PASS: configured tier label appears: '$needle'"; pass=$((pass+1))
+  else
+    echo "FAIL: configured tier label missing: '$needle'"; fail=$((fail+1))
+  fi
+done
+if echo "$out_tier" | grep -qF "(opus) tier"; then
+  echo "FAIL: stale hardcoded 'opus' baseline label leaked with a configured tier"; fail=$((fail+1))
+else
+  echo "PASS: no stale hardcoded 'opus' baseline label with a configured tier"; pass=$((pass+1))
+fi
+
+# -- default: no expensiveTierModel key at all -> baseline label stays
+#    "opus", today's exact behaviour, unchanged by this feature.
+CFG_TIER_DEFAULT="$WORKDIR/cfg-tier-default"
+PROJ_TIER_DEFAULT="$WORKDIR/tier-default-project"
+mkdir -p "$PROJ_TIER_DEFAULT/.optimus"
+echo '{"enabled":true,"updatedAt":"2026-09-11T00:00:00.000Z"}' >"$PROJ_TIER_DEFAULT/.optimus/config.json"
+mkdir -p "$CFG_TIER_DEFAULT/projects"
+SLUG_TIER_DEFAULT="$(correct_slug "$PROJ_TIER_DEFAULT")"
+mkdir -p "$CFG_TIER_DEFAULT/projects/$SLUG_TIER_DEFAULT"
+write_assistant_line "$CFG_TIER_DEFAULT/projects/$SLUG_TIER_DEFAULT/session-default.jsonl" "$PROJ_TIER_DEFAULT" "claude-opus-5" 100 50 0 0
+write_subagent_transcript "$CFG_TIER_DEFAULT/projects/$SLUG_TIER_DEFAULT/session-default/subagents" "1" "claude-haiku-4-5"
+
+check_contains "default (no expensiveTierModel key): baseline label stays 'opus'" "$CFG_TIER_DEFAULT" "$PROJ_TIER_DEFAULT" "hypothetical cost on opus" ""
+
+# -- a project with NO .optimus/config.json at all (Optimus never
+#    activated here) must also default the baseline label to "opus" --
+#    expensiveTierKey() must not throw when getConfig() finds nothing.
+CFG_TIER_NOCFG="$WORKDIR/cfg-tier-nocfg"
+PROJ_TIER_NOCFG="$WORKDIR/tier-nocfg-project"
+mkdir -p "$PROJ_TIER_NOCFG"
+mkdir -p "$CFG_TIER_NOCFG/projects"
+SLUG_TIER_NOCFG="$(correct_slug "$PROJ_TIER_NOCFG")"
+mkdir -p "$CFG_TIER_NOCFG/projects/$SLUG_TIER_NOCFG"
+write_assistant_line "$CFG_TIER_NOCFG/projects/$SLUG_TIER_NOCFG/session-nocfg.jsonl" "$PROJ_TIER_NOCFG" "claude-opus-5" 100 50 0 0
+write_subagent_transcript "$CFG_TIER_NOCFG/projects/$SLUG_TIER_NOCFG/session-nocfg/subagents" "1" "claude-haiku-4-5"
+
+check_contains "no .optimus/config.json at all: baseline label stays 'opus', no crash" "$CFG_TIER_NOCFG" "$PROJ_TIER_NOCFG" "hypothetical cost on opus" ""
+
+# -- an unknown expensiveTierModel degrades to a no-pricing message,
+#    never a wrong (e.g. $0.0000) number.
+CFG_TIER_UNKNOWN="$WORKDIR/cfg-tier-unknown"
+PROJ_TIER_UNKNOWN="$WORKDIR/tier-unknown-project"
+mkdir -p "$PROJ_TIER_UNKNOWN/.optimus"
+echo '{"enabled":true,"updatedAt":"2026-09-11T00:00:00.000Z","expensiveTierModel":"gpt-5"}' >"$PROJ_TIER_UNKNOWN/.optimus/config.json"
+mkdir -p "$CFG_TIER_UNKNOWN/projects"
+SLUG_TIER_UNKNOWN="$(correct_slug "$PROJ_TIER_UNKNOWN")"
+mkdir -p "$CFG_TIER_UNKNOWN/projects/$SLUG_TIER_UNKNOWN"
+write_assistant_line "$CFG_TIER_UNKNOWN/projects/$SLUG_TIER_UNKNOWN/session-unknown.jsonl" "$PROJ_TIER_UNKNOWN" "claude-opus-5" 100 50 0 0
+write_subagent_transcript "$CFG_TIER_UNKNOWN/projects/$SLUG_TIER_UNKNOWN/session-unknown/subagents" "1" "claude-haiku-4-5"
+
+out_unknown="$(run_stats "$CFG_TIER_UNKNOWN" "$PROJ_TIER_UNKNOWN")"
+if echo "$out_unknown" | grep -qF "hypothetical cost on gpt-5"; then
+  echo "FAIL: unknown tier produced a hypothetical cost line instead of degrading"; fail=$((fail+1))
+else
+  echo "PASS: unknown tier does not print a hypothetical-cost number"; pass=$((pass+1))
+fi
+if echo "$out_unknown" | grep -qiF "no pricing data"; then
+  echo "PASS: unknown tier degrades to a no-pricing message"; pass=$((pass+1))
+else
+  echo "FAIL: unknown tier did not print a no-pricing message: $out_unknown"; fail=$((fail+1))
+fi
+if echo "$out_unknown" | grep -qF "estimated saving (gross)"; then
+  echo "FAIL: unknown tier printed a gross-saving number instead of degrading cleanly"; fail=$((fail+1))
+else
+  echo "PASS: unknown tier prints no gross/net saving figures at all"; pass=$((pass+1))
+fi
+
+echo ""
 echo "== $pass passed, $fail failed =="
 if [ "$fail" -ne 0 ]; then
   exit 1

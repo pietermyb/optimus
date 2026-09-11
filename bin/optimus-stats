@@ -27,7 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { findProjectRoot, CONFIG_DIRNAME } = require(
+const { findProjectRoot, CONFIG_DIRNAME, getConfig, DEFAULT_EXPENSIVE_TIER_MODEL } = require(
   path.join(__dirname, '..', 'hooks', 'optimus-config.js')
 );
 const { STATE_DIRNAME, LEDGER_FILENAME } = require(
@@ -53,10 +53,42 @@ const CACHE_READ_MULT = 0.1;
 /** Tool names that mean "dispatch a subagent", across both hosts. */
 const DISPATCH_TOOLS = new Set(['Task', 'Agent']);
 
+// A project's expensiveTierModel config value may be a short tier label
+// ("opus"/"sonnet"/"haiku" -- what the scaffold writes and what
+// bin/optimus-stats' own baseline defaults to) rather than a full PRICING
+// key. Resolved BEFORE the substring match below: none of the short
+// labels is a substring of its own full model string ("opus" does not
+// occur in "claude-opus-5"), so without this map every default-config
+// project would silently degrade to a no-pricing baseline. An unknown
+// label (short or full) still falls through to the substring match and,
+// failing that, returns null -- never a silently wrong price.
+const TIER_LABEL_TO_PRICING_KEY = {
+  opus: 'claude-opus-5',
+  sonnet: 'claude-sonnet-5',
+  haiku: 'claude-haiku-4-5',
+};
+
 function pricingFor(model) {
   if (!model) return null;
+  if (Object.prototype.hasOwnProperty.call(TIER_LABEL_TO_PRICING_KEY, model)) {
+    return PRICING[TIER_LABEL_TO_PRICING_KEY[model]];
+  }
   const key = Object.keys(PRICING).find((k) => model.indexOf(k) === 0 || model.indexOf(k) !== -1);
   return key ? PRICING[key] : null;
+}
+
+// Stats-only. Gating uses expensiveModelPattern; this key exists so a
+// project on a different expensive tier gets a truthful baseline label
+// and the right prices, without touching enforcement. No gating path
+// reads this function or its result.
+function expensiveTierKey(cwd) {
+  try {
+    const c = getConfig(cwd);
+    const v = c && c.raw && c.raw.expensiveTierModel;
+    return typeof v === 'string' && v.trim() !== '' ? v : DEFAULT_EXPENSIVE_TIER_MODEL;
+  } catch (e) {
+    return DEFAULT_EXPENSIVE_TIER_MODEL;
+  }
 }
 
 function emptyUsage() {
@@ -810,21 +842,29 @@ function main() {
     console.log('');
   }
 
-  const opusPricing = pricingFor('claude-opus-5');
+  const tier = expensiveTierKey(cwd);
+  const tierPricing = pricingFor(tier);
   const delegatedModels = Object.keys(delegatedUsage);
   if (delegatedModels.length === 0) {
-    console.log('Estimated saving vs. running delegated work on the expensive (opus) tier: no delegated work recorded yet.');
+    console.log('Estimated saving vs. running delegated work on the expensive (' + tier + ') tier: no delegated work recorded yet.');
+  } else if (!tierPricing) {
+    // Fail safe to a no-data line, never a wrong number: an unrecognized
+    // expensiveTierModel (short label or full string) must not silently
+    // print a $0.0000 "saving" that looks like a real measurement.
+    console.log(
+      'Estimated saving vs. running delegated work on the expensive (' + tier + ') tier: ' +
+        'no pricing data for "' + tier + '" -- cannot compute a hypothetical cost.'
+    );
   } else {
-    let hypotheticalOpusCost = 0;
+    let hypotheticalTierCost = 0;
     for (const u of Object.values(delegatedUsage)) {
-      if (!opusPricing) continue;
-      hypotheticalOpusCost +=
-        (u.input_tokens / 1e6) * opusPricing.input +
-        (u.output_tokens / 1e6) * opusPricing.output +
-        (u.cache_creation_input_tokens / 1e6) * opusPricing.input * CACHE_WRITE_MULT +
-        (u.cache_read_input_tokens / 1e6) * opusPricing.input * CACHE_READ_MULT;
+      hypotheticalTierCost +=
+        (u.input_tokens / 1e6) * tierPricing.input +
+        (u.output_tokens / 1e6) * tierPricing.output +
+        (u.cache_creation_input_tokens / 1e6) * tierPricing.input * CACHE_WRITE_MULT +
+        (u.cache_read_input_tokens / 1e6) * tierPricing.input * CACHE_READ_MULT;
     }
-    const grossSaving = hypotheticalOpusCost - delegatedCost;
+    const grossSaving = hypotheticalTierCost - delegatedCost;
 
     // Priced at the ORCHESTRATOR's own model rate, not the subagent's:
     // these tokens were billed to the main session.
@@ -834,9 +874,9 @@ function main() {
     }
     const netSaving = grossSaving - coordinatorCost;
 
-    console.log('Estimated saving vs. running delegated work on the expensive (opus) tier:');
+    console.log('Estimated saving vs. running delegated work on the expensive (' + tier + ') tier:');
     console.log('  actual delegated cost     : $' + delegatedCost.toFixed(4));
-    console.log('  hypothetical cost on opus : $' + hypotheticalOpusCost.toFixed(4) + '  (same measured token counts, re-priced at opus rates)');
+    console.log('  hypothetical cost on ' + tier + ' : $' + hypotheticalTierCost.toFixed(4) + '  (same measured token counts, re-priced at ' + tier + ' rates)');
     console.log('  estimated saving (gross)  : $' + grossSaving.toFixed(4));
     console.log('  coordinator overhead      : $' + coordinatorCost.toFixed(4) +
       '  (' + coordinatorCycles + ' dispatch cycles: cache_write on dispatch + cache_read on summary, at the orchestrator\'s own rate)');
@@ -844,7 +884,7 @@ function main() {
     if (coordinatorUnresolved > 0) {
       console.log('  ' + coordinatorUnresolved + ' dispatch(es) had no matching tool_result and contributed dispatch-side tokens only.');
     }
-    console.log('  ESTIMATE, not a fact: assumes opus would have used the same token volume for the same work.');
+    console.log('  ESTIMATE, not a fact: assumes ' + tier + ' would have used the same token volume for the same work.');
     console.log('  Real savings may differ — a bigger model can sometimes solve a task in fewer turns/tokens,');
     console.log('  or a smaller model may need more turns to reach the same result.');
     console.log('  The net figure additionally assumes coordinator dispatch/summary tokens are correctly');
@@ -860,4 +900,5 @@ module.exports = {
   coordinatorUsageFor,
   costFor,
   pricingFor,
+  expensiveTierKey,
 };

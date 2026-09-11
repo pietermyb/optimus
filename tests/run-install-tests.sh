@@ -105,7 +105,89 @@ fi
 [ -e "$W8/nonexistent.json" ] && bad "wrote through the dangling symlink" || ok "did not write through the dangling symlink"
 grep -qi 'refusing to write through a symlink' "$W8/out.txt" && ok "names the symlink as the reason" || bad "unclear reason: $(cat "$W8/out.txt")"
 
-rm -rf "$W" "$W2" "$W3" "$W4" "$W5" "$W6" "$W7" "$W8"
+# --- optimus-cli on: complete, explicit scaffold -----------------------
+W9="$(mktemp -d)"; P9="$W9/project"; mkdir -p "$P9"
+CURSOR_PROJECT_DIR="$P9" HOME="$W9" node "$CLI" on >/dev/null 2>&1 || bad "optimus-cli on exited non-zero"
+CONFIG9="$P9/.optimus/config.json"
+[ -f "$CONFIG9" ] && ok "on writes .optimus/config.json" || bad "on did not write config.json"
+
+for key in '"inlineAllowancePerTurn": 2' '"expensiveModelPattern": "opus"' '"expensiveTierModel": "opus"' '"gatedTools"' '"shellBypassPatterns"'; do
+  if grep -qF "$key" "$CONFIG9"; then
+    ok "scaffold writes $key"
+  else
+    bad "scaffold missing $key"
+  fi
+done
+
+node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$CONFIG9" \
+  && ok "scaffolded config.json is valid JSON" || bad "scaffolded config.json is not valid JSON"
+
+# gatedTools must reproduce DEFAULT_GATED_TOOLS (WORK_TOOLS plus Cursor's
+# Delete -- see commit 2e53a46), not the narrower WORK_TOOLS-only list: a
+# scaffolded project must gate Delete exactly like one with no gatedTools
+# override at all, which falls back to DEFAULT_GATED_TOOLS.
+if grep -qF '"Delete"' "$CONFIG9"; then
+  ok "scaffolded gatedTools includes Delete"
+else
+  bad "scaffolded gatedTools is missing Delete -- would silently change a re-scaffolded project's behaviour"
+fi
+
+# --- invariant: a freshly scaffolded project decides identically to a --
+# --- bare {enabled, updatedAt} project ----------------------------------
+W10="$(mktemp -d)"; P10="$W10/project"; mkdir -p "$P10/.optimus"
+cat >"$P10/.optimus/config.json" <<'JSON'
+{"enabled":true,"updatedAt":"2026-09-11T00:00:00.000Z"}
+JSON
+
+if node -e '
+  const path = require("path");
+  const root = process.argv[1];
+  const scaffoldCwd = process.argv[2];
+  const bareCwd = process.argv[3];
+  const cfg = require(path.join(root, "hooks", "optimus-config.js"));
+  const core = require(path.join(root, "hooks", "optimus-core.js"));
+
+  function policyFor(cwd) {
+    return {
+      gatedTools: cfg.getGatedTools(cwd),
+      expensiveModelRe: cfg.getExpensiveModelRe(cwd),
+      shellBypassPatterns: cfg.getShellBypassPatterns(cwd),
+    };
+  }
+
+  const scaffoldPolicy = policyFor(scaffoldCwd);
+  const barePolicy = policyFor(bareCwd);
+
+  const cases = [
+    { tool: "Read", toolInput: {}, isSubagent: false, config: { enabled: true } },
+    { tool: "Delete", toolInput: {}, isSubagent: false, config: { enabled: true } },
+    { tool: "Bash", toolInput: {}, isSubagent: false, config: { enabled: true } },
+    { tool: core.SHELL, toolInput: { command: "cat foo.txt" }, isSubagent: false, config: { enabled: true } },
+    { tool: core.SHELL, toolInput: { command: "rm -rf foo" }, isSubagent: false, config: { enabled: true } },
+    { tool: core.AGENT_DISPATCH, toolInput: { model: "claude-opus-5" }, isSubagent: false, config: { enabled: true } },
+    { tool: core.AGENT_DISPATCH, toolInput: { model: "claude-haiku-4-5" }, isSubagent: false, config: { enabled: true } },
+    { tool: core.AGENT_DISPATCH, toolInput: {}, isSubagent: false, config: { enabled: true } },
+    { tool: "Read", toolInput: {}, isSubagent: true, config: { enabled: true } },
+  ];
+
+  for (const c of cases) {
+    const scaffoldDecision = core.decide(Object.assign({}, c, { policy: scaffoldPolicy }));
+    const bareDecision = core.decide(Object.assign({}, c, { policy: barePolicy }));
+    if (JSON.stringify(scaffoldDecision) !== JSON.stringify(bareDecision)) {
+      throw new Error(
+        "decision mismatch for " + JSON.stringify(c) + ": scaffold=" + JSON.stringify(scaffoldDecision) +
+        " bare=" + JSON.stringify(bareDecision)
+      );
+    }
+  }
+  console.log("ok");
+' "$ROOT" "$P9" "$P10" | grep -q ok; then
+  ok "a freshly scaffolded project decides identically to a bare {enabled, updatedAt} project"
+else
+  bad "scaffolded project's decisions diverge from a bare {enabled, updatedAt} project"
+fi
+
+rm -rf "$W" "$W2" "$W3" "$W4" "$W5" "$W6" "$W7" "$W8" "$W9" "$W10"
 
 echo ""
 echo "== $pass passed, $fail failed =="

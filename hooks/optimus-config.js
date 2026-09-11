@@ -66,6 +66,19 @@ const DEFAULT_GATED_TOOLS = new Set([...WORK_TOOLS, 'Delete']);
 const EXPENSIVE_MODEL_RE = /opus/i;
 
 /**
+ * Default value for the `expensiveTierModel` config key (bin/optimus-stats
+ * only -- see the comment on that key's reader there). Shares the string
+ * "opus" with EXPENSIVE_MODEL_RE.source today by coincidence of what
+ * Optimus's research used, not by design: the two keys are read by
+ * different code for different purposes (this is a stats/pricing label,
+ * that is a gating pattern) and are allowed to diverge per-project.
+ * Naming this constant separately, and having both bin/optimus-stats's
+ * fallback and setConfig()'s scaffold read it, keeps that one
+ * coincidental default in exactly one place.
+ */
+const DEFAULT_EXPENSIVE_TIER_MODEL = 'opus';
+
+/**
  * Default shell read-bypass patterns. Moved here from optimus-core.js so
  * that the default and the config override live in one file; core.js
  * re-exports them so existing importers are unaffected.
@@ -301,12 +314,25 @@ function setConfig(cwd, enabled) {
       ? existing.inlineAllowancePerTurn
       : DEFAULT_INLINE_ALLOWANCE_PER_TURN;
 
+  // Every policy key is written explicitly, at the value that reproduces
+  // today's hardcoded behaviour exactly. Every value except
+  // inlineAllowancePerTurn (preserved above, per Phase 1) is derived from
+  // the SAME exported constants the resolvers themselves fall back to
+  // (DEFAULT_GATED_TOOLS, EXPENSIVE_MODEL_RE, DEFAULT_SHELL_BYPASS_PATTERNS,
+  // DEFAULT_EXPENSIVE_TIER_MODEL) rather than re-spelled literally here, so
+  // scaffold and fallback can never drift apart. A freshly scaffolded
+  // project must decide byte-identically to one with only
+  // {enabled, updatedAt} -- see tests/run-install-tests.sh.
   const payload =
     JSON.stringify(
       {
         enabled: !!enabled,
         inlineAllowancePerTurn: inlineAllowancePerTurn,
         updatedAt: new Date().toISOString(),
+        expensiveModelPattern: EXPENSIVE_MODEL_RE.source,
+        gatedTools: Array.from(DEFAULT_GATED_TOOLS),
+        shellBypassPatterns: DEFAULT_SHELL_BYPASS_PATTERNS.map((re) => re.source),
+        expensiveTierModel: DEFAULT_EXPENSIVE_TIER_MODEL,
       },
       null,
       2
@@ -327,6 +353,7 @@ module.exports = {
   DEFAULT_GATED_TOOLS,
   EXPENSIVE_MODEL_RE,
   DEFAULT_SHELL_BYPASS_PATTERNS,
+  DEFAULT_EXPENSIVE_TIER_MODEL,
   getExpensiveModelRe,
   getGatedTools,
   getShellBypassPatterns,
