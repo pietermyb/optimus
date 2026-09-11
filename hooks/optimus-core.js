@@ -92,10 +92,11 @@ const REASON = {
   SHELL_READ_BYPASS: 'shell-read-bypass',
 };
 
-function isReadBypassCommand(command) {
+function isReadBypassCommand(command, patterns) {
   const cmd = typeof command === 'string' ? command : '';
   if (cmd === '') return false;
-  return SHELL_READ_PATTERNS.some((pattern) => pattern.test(cmd));
+  const list = Array.isArray(patterns) ? patterns : DEFAULT_SHELL_BYPASS_PATTERNS;
+  return list.some((pattern) => pattern.test(cmd));
 }
 
 /**
@@ -128,11 +129,25 @@ const ALLOW = { allow: true, reason: null };
  *                                           most once and only when step 5 or 6
  *                                           would otherwise deny.
  * @param {{enabled: boolean, modelConditional?: boolean}} input.config
+ * @param {{gatedTools?: Set<string>, expensiveModelRe?: RegExp, shellBypassPatterns?: RegExp[]}=} input.policy
+ *                                           resolved policy injected by the adapter. decide() does
+ *                                           no I/O and cannot read config itself; any missing
+ *                                           member falls back to the module default, so a caller
+ *                                           that omits policy entirely gets exactly today's
+ *                                           behaviour.
  * @returns {{allow: boolean, reason: string|null, tool?: string, model?: string, inlineAllowance?: boolean}}
  */
-function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, config }) {
+function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, config, policy }) {
   const cfg = config || {};
   const input = toolInput || {};
+
+  // Resolved policy, injected by the adapter. decide() does no I/O, so it
+  // cannot read config itself; an absent member means "use the built-in
+  // default", which is what keeps every pre-existing caller working.
+  const pol = policy || {};
+  const gatedTools = pol.gatedTools instanceof Set ? pol.gatedTools : WORK_TOOLS;
+  const expensiveRe = pol.expensiveModelRe instanceof RegExp ? pol.expensiveModelRe : EXPENSIVE_MODEL_RE;
+  const bypassPatterns = Array.isArray(pol.shellBypassPatterns) ? pol.shellBypassPatterns : DEFAULT_SHELL_BYPASS_PATTERNS;
 
   let allowanceChecked = false;
   let allowanceGranted = false;
@@ -170,7 +185,7 @@ function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, c
     if (typeof model !== 'string' || model.trim() === '') {
       return { allow: false, reason: REASON.NO_MODEL_SET };
     }
-    if (EXPENSIVE_MODEL_RE.test(model)) {
+    if (expensiveRe.test(model)) {
       return { allow: false, reason: REASON.EXPENSIVE_MODEL_DISPATCH, model: model };
     }
     return ALLOW;
@@ -190,14 +205,14 @@ function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, c
     cfg.modelConditional &&
     typeof sessionModel === 'string' &&
     sessionModel.trim() !== '' &&
-    !EXPENSIVE_MODEL_RE.test(sessionModel)
+    !expensiveRe.test(sessionModel)
   ) {
     return ALLOW;
   }
 
   // 5 — work tools denied in the orchestrator while Optimus is active,
   // unless an allowance unit is granted inline for this turn.
-  if (WORK_TOOLS.has(tool)) {
+  if (gatedTools.has(tool)) {
     if (tryInlineAllowance()) {
       return { allow: true, reason: null, inlineAllowance: true, tool: tool };
     }
@@ -205,7 +220,7 @@ function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, c
   }
 
   // 6 — shell: best-effort speed bump only, not a security boundary.
-  if (tool === SHELL && isReadBypassCommand(input.command)) {
+  if (tool === SHELL && isReadBypassCommand(input.command, bypassPatterns)) {
     if (tryInlineAllowance()) {
       return { allow: true, reason: null, inlineAllowance: true, tool: tool };
     }

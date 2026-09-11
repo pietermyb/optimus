@@ -138,6 +138,30 @@ t('shell with a missing command is allowed', () => {
   assert.strictEqual(d({ tool: SHELL, toolInput: {} }).allow, true);
 });
 
+// --- injected policy ----------------------------------------------------
+t('an injected gatedTools set replaces the default', () => {
+  const policy = { gatedTools: new Set(['Read']) };
+  assert.strictEqual(d({ tool: 'Read', policy }).allow, false);
+  assert.strictEqual(d({ tool: 'Write', policy }).allow, true);
+});
+t('an injected expensiveModelRe replaces the default', () => {
+  const policy = { expensiveModelRe: /gpt-5/i };
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'gpt-5-pro' }, policy }).allow, false);
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'claude-opus-5' }, policy }).allow, true);
+});
+t('injected bypass patterns replace the default', () => {
+  const policy = { shellBypassPatterns: [/^\s*bat\s+/] };
+  assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'bat a.js' }, policy }).allow, false);
+  assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'cat a.js' }, policy }).allow, true);
+});
+t('an empty gatedTools set gates nothing', () => {
+  assert.strictEqual(d({ tool: 'Read', policy: { gatedTools: new Set() } }).allow, true);
+});
+t('no policy argument behaves exactly as the built-in defaults', () => {
+  assert.deepStrictEqual(d({ tool: 'Read' }), d({ tool: 'Read', policy: {} }));
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'claude-opus-5' } }).allow, false);
+});
+
 // --- inline allowance injection -----------------------------------------
 t('first N gated calls allow inline, N+1 returns existing deny reason', () => {
   let remaining = 2;
