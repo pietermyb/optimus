@@ -99,6 +99,26 @@ never be able to *wedge* a session with no way out; this is the escape
 hatch. It's an env var, not a repo-local file, so it works everywhere and
 can't itself be blocked by anything Optimus controls.
 
+## Config fields
+
+`.optimus/config.json` is written by `/optimus` and you normally never touch it
+by hand. Two optional fields let a project extend the policy. Both are opt-in and
+additive: leave them out and Optimus behaves exactly as it does today.
+
+| Field | Type | Default | What it does |
+|---|---|---|---|
+| `gateTools` | array of strings | absent (no extra tools gated) | Tool-name globs treated as work tools, on top of the built-ins. A matching tool is denied in the main session and must be delegated to a subagent, exactly like a built-in work tool. Only `*` is special and the match is anchored end to end, so `"mcp__*"` gates every MCP tool while `"grafana"` matches nothing. |
+| `expensiveModelPattern` | string | absent (built-in `/opus/i`) | A regular expression that replaces the built-in expensive-tier match. It is compiled case-insensitive, so pass the pattern only, no flags and no delimiters, e.g. `"opus|gpt-4"`. |
+
+Both fields are parsed defensively. A malformed value (a bad regex, the wrong
+type, or a single bad glob inside the list) is dropped and the built-in default
+applies, so a typo in the config can never wedge a hook or silently flip the
+policy.
+
+A gated tool inherits the same enforcement as the built-in work tools, so the
+whole table below applies to it too, including the subagent exemption. Gating a
+tool routes it to your cheaper subagents, it does not block it outright.
+
 ## What's hard-enforced vs. advisory
 
 This table is the most important part of this README. Read it before

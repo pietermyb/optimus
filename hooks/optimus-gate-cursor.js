@@ -45,6 +45,7 @@ const { isSubagentConversation } = require(path.join(__dirname, 'optimus-sidecar
 const {
   decide,
   ledgerEventFor,
+  buildDecideConfig,
   AGENT_DISPATCH,
   SHELL,
   REASON,
@@ -229,9 +230,7 @@ function main(raw) {
     // model_id was absent from every preToolUse payload observed, despite
     // being documented; model carried the plain slug. Fall back.
     sessionModel: typeof payload.model_id === 'string' ? payload.model_id : payload.model,
-    config: cfg.raw && cfg.raw.modelConditional
-      ? { enabled: true, modelConditional: true }
-      : { enabled: true },
+    config: buildDecideConfig(cfg.raw),
   });
 
   const event = ledgerEventFor({ tool: tool, toolInput: toolInput, decision: decision });

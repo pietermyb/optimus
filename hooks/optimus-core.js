@@ -123,6 +123,75 @@ function cmdHead(command) {
 const ALLOW = { allow: true, reason: null };
 
 /**
+ * Convert a tool-name glob (only `*` is special) to an anchored RegExp.
+ * Backs the opt-in `gateTools` config: a project can name extra tools to
+ * treat as work — e.g. "mcp__*" to route every MCP call off the
+ * orchestrator, or "mcp__grafana-multi__*" for just one server. Everything
+ * but `*` is matched literally.
+ */
+function globToRegExp(glob) {
+  const body = String(glob).replace(/[.*+?^${}()|[\]\\]/g, (m) => (m === '*' ? '.*' : '\\' + m));
+  return new RegExp('^' + body + '$');
+}
+
+function matchesGate(tool, gatePatterns) {
+  return Array.isArray(gatePatterns) && gatePatterns.some((re) => re.test(tool));
+}
+
+/**
+ * Compile the optional policy overrides a project may set in
+ * .optimus/config.json into the shapes decide() consumes. PURE and
+ * defensive: any malformed field is dropped (never thrown), so a typo in a
+ * user's config can never wedge a hook or silently flip the default policy —
+ * it just falls back to the built-ins.
+ *
+ *   expensiveModelPattern: string      -> RegExp (case-insensitive), overrides /opus/i
+ *   gateTools:             string[]     -> RegExp[] of name globs, ADDED to WORK_TOOLS
+ *
+ * Both are opt-in and additive: absent or empty means the built-in behaviour,
+ * unchanged. That is what lets a workflow gate its own heavy tools (MCP, say)
+ * without moving anyone else's defaults.
+ */
+function compilePolicy(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const out = {};
+  if (typeof r.expensiveModelPattern === 'string' && r.expensiveModelPattern.trim() !== '') {
+    try {
+      out.expensiveModel = new RegExp(r.expensiveModelPattern, 'i');
+    } catch (e) {
+      // invalid regex in user config — keep the built-in default
+    }
+  }
+  if (Array.isArray(r.gateTools)) {
+    const pats = [];
+    for (const g of r.gateTools) {
+      if (typeof g === 'string' && g.trim() !== '') {
+        try {
+          pats.push(globToRegExp(g));
+        } catch (e) {
+          // skip a single bad glob rather than dropping the whole list
+        }
+      }
+    }
+    if (pats.length) out.gatePatterns = pats;
+  }
+  return out;
+}
+
+/**
+ * Build the `config` object decide() expects from a raw .optimus/config.json.
+ * Both host adapters call this so they enforce byte-identical policy — the
+ * exact duplication this module exists to prevent. Callers reach here only
+ * after confirming the project is enabled, so `enabled: true` is implied.
+ */
+function buildDecideConfig(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const cfg = Object.assign({ enabled: true }, compilePolicy(r));
+  if (r.modelConditional) cfg.modelConditional = true;
+  return cfg;
+}
+
+/**
  * @param {object}        input
  * @param {string}        input.tool         normalized tool name
  * @param {object}        input.toolInput    normalized input; only .model,
@@ -140,6 +209,9 @@ const ALLOW = { allow: true, reason: null };
 function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
   const cfg = config || {};
   const input = toolInput || {};
+  // Expensive-tier matcher: a project may override /opus/i via config; the
+  // built-in default applies whenever it doesn't.
+  const expRe = cfg.expensiveModel instanceof RegExp ? cfg.expensiveModel : EXPENSIVE_MODEL_RE;
 
   // 1 — subagent exemption. Load-bearing; must stay first.
   if (isSubagent) return ALLOW;
@@ -159,7 +231,7 @@ function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
     if (typeof model !== 'string' || model.trim() === '') {
       return { allow: false, reason: REASON.NO_MODEL_SET };
     }
-    if (EXPENSIVE_MODEL_RE.test(model)) {
+    if (expRe.test(model)) {
       return { allow: false, reason: REASON.EXPENSIVE_MODEL_DISPATCH, model: model };
     }
     return ALLOW;
@@ -179,13 +251,14 @@ function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
     cfg.modelConditional &&
     typeof sessionModel === 'string' &&
     sessionModel.trim() !== '' &&
-    !EXPENSIVE_MODEL_RE.test(sessionModel)
+    !expRe.test(sessionModel)
   ) {
     return ALLOW;
   }
 
-  // 5 — work tools denied in the orchestrator while Optimus is active.
-  if (WORK_TOOLS.has(tool)) {
+  // 5 — work tools denied in the orchestrator while Optimus is active. The
+  // built-in set, plus any opt-in name globs a project adds via gateTools.
+  if (WORK_TOOLS.has(tool) || matchesGate(tool, cfg.gatePatterns)) {
     return { allow: false, reason: REASON.WORK_TOOL_IN_ORCHESTRATOR, tool: tool };
   }
 
@@ -242,6 +315,9 @@ function ledgerEventFor({ tool, toolInput, decision }) {
 module.exports = {
   decide,
   ledgerEventFor,
+  compilePolicy,
+  buildDecideConfig,
+  globToRegExp,
   cmdHead,
   isReadBypassCommand,
   AGENT_DISPATCH,

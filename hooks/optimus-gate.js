@@ -34,6 +34,7 @@ const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
 const {
   decide,
   ledgerEventFor,
+  buildDecideConfig,
   AGENT_DISPATCH,
   SHELL,
   REASON,
@@ -142,9 +143,7 @@ function main(raw) {
     toolInput: toolInput,
     isSubagent: false,
     sessionModel: null,
-    config: cfg.raw && cfg.raw.modelConditional
-      ? { enabled: true, modelConditional: true }
-      : { enabled: true },
+    config: buildDecideConfig(cfg.raw),
   });
 
   const event = ledgerEventFor({ tool: tool, toolInput: toolInput, decision: decision });

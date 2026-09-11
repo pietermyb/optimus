@@ -260,6 +260,27 @@ Optimus/
 └── .gitignore
 ```
 
+### Config knobs: `compilePolicy` and `buildDecideConfig`
+
+`decide()` takes its policy from a compiled config object, not from the raw
+`.optimus/config.json`, and both host adapters build that object through one
+shared pair of functions in `optimus-core.js` so they enforce the same policy
+byte for byte. `compilePolicy(raw)` turns the two optional overrides into the
+shapes `decide()` consumes: `expensiveModelPattern` (a string) becomes a
+case-insensitive `RegExp` that replaces the built-in `/opus/i`, and `gateTools`
+(a string array) becomes anchored `RegExp` globs that are added to the built-in
+`WORK_TOOLS` set. `buildDecideConfig(raw)` wraps that, layering on `enabled` and
+the Cursor-only `modelConditional`.
+
+Both functions are pure and defensive by design. Every field is validated in
+isolation: an `expensiveModelPattern` that is not a valid regex is dropped, and a
+`gateTools` entry that is not a non-empty string, or that fails to compile, is
+skipped without dropping the rest of the list. Anything malformed falls back to
+the built-in default rather than throwing, so a bad config degrades to stock
+behaviour instead of wedging a hook. The glob compiler treats only `*` as
+special and anchors the match end to end, so `"mcp__*"` matches every MCP tool
+name and nothing partial slips through.
+
 ### `hooks/hooks.json` — naming matters, and this is not hypothetical
 
 Claude Code's plugin hook loader reliably picks up hook configuration in

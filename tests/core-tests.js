@@ -15,7 +15,10 @@ const assert = require('assert');
 const path = require('path');
 const core = require(path.join(__dirname, '..', 'hooks', 'optimus-core.js'));
 
-const { AGENT_DISPATCH, SHELL, REASON, decide, ledgerEventFor, cmdHead } = core;
+const {
+  AGENT_DISPATCH, SHELL, REASON, decide, ledgerEventFor, cmdHead,
+  compilePolicy, buildDecideConfig, globToRegExp,
+} = core;
 
 const ON = { enabled: true };
 const OFF = { enabled: false };
@@ -193,6 +196,61 @@ t('cmdHead keeps only the first token, word chars only', () => {
 });
 t('cmdHead truncates at 32 chars', () => {
   assert.strictEqual(cmdHead('a'.repeat(50)).length, 32);
+});
+
+// --- configurable policy: gateTools (opt-in extra work tools) -----------
+t('with no gateTools, an MCP tool is still allowed (default unchanged)', () => {
+  assert.deepStrictEqual(d({ tool: 'mcp__grafana-multi__query_loki_logs' }), { allow: true, reason: null });
+});
+t('gateTools "mcp__*" denies any MCP tool in the orchestrator', () => {
+  const cfg = buildDecideConfig({ enabled: true, gateTools: ['mcp__*'] });
+  const r = d({ tool: 'mcp__grafana-multi__query_loki_logs', config: cfg });
+  assert.strictEqual(r.allow, false);
+  assert.strictEqual(r.reason, REASON.WORK_TOOL_IN_ORCHESTRATOR);
+  assert.strictEqual(r.tool, 'mcp__grafana-multi__query_loki_logs');
+});
+t('a scoped gateTools glob only gates its own server', () => {
+  const cfg = buildDecideConfig({ enabled: true, gateTools: ['mcp__grafana-multi__*'] });
+  assert.strictEqual(d({ tool: 'mcp__grafana-multi__query_loki_logs', config: cfg }).allow, false);
+  assert.strictEqual(d({ tool: 'mcp__github__get_me', config: cfg }).allow, true);
+});
+t('gateTools still exempts a subagent (exemption stays first)', () => {
+  const cfg = buildDecideConfig({ enabled: true, gateTools: ['mcp__*'] });
+  assert.strictEqual(d({ tool: 'mcp__github__get_me', isSubagent: true, config: cfg }).allow, true);
+});
+t('a gated tool is waived by the modelConditional exemption, like any work tool', () => {
+  const cfg = buildDecideConfig({ enabled: true, modelConditional: true, gateTools: ['mcp__*'] });
+  assert.strictEqual(d({ tool: 'mcp__github__get_me', sessionModel: 'claude-haiku-4-5', config: cfg }).allow, true);
+});
+t('a malformed gateTools (not an array) is ignored, not thrown', () => {
+  const cfg = buildDecideConfig({ enabled: true, gateTools: 'mcp__*' });
+  assert.strictEqual(d({ tool: 'mcp__github__get_me', config: cfg }).allow, true);
+});
+
+// --- configurable policy: expensiveModelPattern override ----------------
+t('expensiveModelPattern override denies a dispatch naming the custom tier', () => {
+  const cfg = buildDecideConfig({ enabled: true, expensiveModelPattern: 'gpt-4|sonnet' });
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'sonnet' }, config: cfg }).reason, REASON.EXPENSIVE_MODEL_DISPATCH);
+});
+t('a bad expensiveModelPattern regex falls back to the built-in /opus/i', () => {
+  const cfg = buildDecideConfig({ enabled: true, expensiveModelPattern: '(' });
+  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'claude-opus-5' }, config: cfg }).reason, REASON.EXPENSIVE_MODEL_DISPATCH);
+});
+
+// --- compile helpers ----------------------------------------------------
+t('globToRegExp treats only * as special and anchors the match', () => {
+  assert.ok(globToRegExp('mcp__*').test('mcp__x'));
+  assert.ok(!globToRegExp('mcp__*').test('xmcp__x'));
+  assert.ok(!globToRegExp('kubectl').test('kubectl-extra'));
+});
+t('compilePolicy drops malformed fields and keeps built-in defaults', () => {
+  assert.deepStrictEqual(compilePolicy({}), {});
+  assert.deepStrictEqual(compilePolicy(null), {});
+  assert.strictEqual(compilePolicy({ expensiveModelPattern: '(' }).expensiveModel, undefined);
+});
+t('buildDecideConfig always sets enabled and carries modelConditional through', () => {
+  assert.deepStrictEqual(buildDecideConfig({}), { enabled: true });
+  assert.strictEqual(buildDecideConfig({ modelConditional: true }).modelConditional, true);
 });
 
 console.log('');
