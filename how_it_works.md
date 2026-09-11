@@ -281,6 +281,18 @@ behaviour instead of wedging a hook. The glob compiler treats only `*` as
 special and anchors the match end to end, so `"mcp__*"` matches every MCP tool
 name and nothing partial slips through.
 
+### Recipe: gate your MCP tools
+
+The highest-value use of `gateTools` for an MCP-heavy workflow is `["mcp__*"]`,
+and the reason is a real sample rather than a guess. Replaying 30 days of one real
+Claude Code history through Optimus's `decide()`: 869 MCP calls ran ungated on the
+expensive model, grafana-multi 558 of them, then Atlassian at 182 and GitHub at
+128. Setting `gateTools: ["mcp__*"]` gates all 869, so that work has to be
+delegated instead of running on the expensive tier, and it leaves every built-in
+count identical (the edits, the reads and the delegations do not move). For a setup
+like that it is the single highest-value line in the config, and it costs nothing
+to anyone who leaves it out.
+
 ### `hooks/hooks.json` — naming matters, and this is not hypothetical
 
 Claude Code's plugin hook loader reliably picks up hook configuration in

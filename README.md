@@ -119,6 +119,15 @@ A gated tool inherits the same enforcement as the built-in work tools, so the
 whole table below applies to it too, including the subagent exemption. Gating a
 tool routes it to your cheaper subagents, it does not block it outright.
 
+## Recipe: gate your MCP tools
+
+If most of what runs on your expensive model arrives through MCP servers rather
+than the built-in work tools, set `gateTools: ["mcp__*"]`. That denies every MCP
+call in the main session the same way Optimus denies Read and Edit, so those calls
+have to be delegated, and the subagent exemption means the delegated call still
+runs fine. The [how it works note](how_it_works.md#recipe-gate-your-mcp-tools) has
+the numbers from a real 30-day sample.
+
 ## What's hard-enforced vs. advisory
 
 This table is the most important part of this README. Read it before
