@@ -95,6 +95,33 @@ function clearActive(cwd, subagentId) {
 }
 
 /**
+ * The one definition of "sweep the marker directory" used by both
+ * parentConversations() and clearStale().
+ *
+ * @returns {number} markers removed
+ */
+function sweepMarkers(dir, cutoff, onLive) {
+  let removed = 0;
+  for (const name of fs.readdirSync(dir)) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).mtimeMs < cutoff) {
+        fs.unlinkSync(file);
+        removed += 1;
+        continue;
+      }
+      if (onLive) {
+        const parent = fs.readFileSync(file, 'utf8').trim();
+        if (parent !== '') onLive(parent);
+      }
+    } catch (e) {
+      // vanished mid-scan, or unreadable — carries no signal
+    }
+  }
+  return removed;
+}
+
+/**
  * The set of conversation ids that currently have at least one subagent
  * outstanding. Stale markers are unlinked as they are found, so a missed
  * subagentStop cannot keep a parent recorded indefinitely.
@@ -104,24 +131,29 @@ function parentConversations(cwd) {
   try {
     const dir = sidecarDir(cwd);
     if (!dir) return parents;
-    const cutoff = Date.now() - STALE_MS;
-    for (const name of fs.readdirSync(dir)) {
-      const file = path.join(dir, name);
-      try {
-        if (fs.statSync(file).mtimeMs < cutoff) {
-          fs.unlinkSync(file);
-          continue;
-        }
-        const parent = fs.readFileSync(file, 'utf8').trim();
-        if (parent !== '') parents.add(parent);
-      } catch (e) {
-        // vanished mid-scan, or unreadable — carries no signal
-      }
-    }
+    sweepMarkers(dir, Date.now() - STALE_MS, (parent) => parents.add(parent));
   } catch (e) {
     // no sidecar dir, unreadable, or not an Optimus project
   }
   return parents;
+}
+
+/**
+ * Proactively removes stale markers.
+ *
+ * Never throws. A failed sweep leaves markers in place, preserving the
+ * module's existing fail-safe behavior.
+ *
+ * @returns {number} markers removed
+ */
+function clearStale(cwd) {
+  try {
+    const dir = sidecarDir(cwd);
+    if (!dir) return 0;
+    return sweepMarkers(dir, Date.now() - STALE_MS, null);
+  } catch (e) {
+    return 0;
+  }
 }
 
 /**
@@ -145,6 +177,7 @@ module.exports = {
   markActive,
   clearActive,
   parentConversations,
+  clearStale,
   isSubagentConversation,
   SIDECAR_DIRNAME,
   STALE_MS,

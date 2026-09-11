@@ -13,6 +13,7 @@ echo "== Optimus sidecar tests =="
 node - "$ROOT" "$PROJECT" <<'NODE'
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const assert = require('assert');
 const [root, project] = process.argv.slice(2);
 const s = require(path.join(root, 'hooks', 'optimus-sidecar.js'));
@@ -86,6 +87,79 @@ t('a stale marker is ignored and swept', () => {
   fs.utimesSync(f, old, old);
   assert.strictEqual(s.parentConversations(project).size, 0);
   assert.strictEqual(fs.existsSync(f), false);
+});
+function makeActiveProject(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(root, '.optimus'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, '.optimus', 'config.json'),
+    JSON.stringify({ enabled: true, updatedAt: new Date().toISOString() }),
+    'utf8',
+  );
+  return root;
+}
+t('clearStale removes stale markers and counts removals', () => {
+  const localProject = makeActiveProject('optimus-stale-');
+  const localDir = path.join(localProject, '.optimus', 'state', s.SIDECAR_DIRNAME);
+  s.markActive(localProject, 'tooluse-stale', 'conv-old');
+  const marker = path.join(localDir, 'tooluse-stale');
+  const old = new Date(Date.now() - s.STALE_MS - 60000);
+  fs.utimesSync(marker, old, old);
+  assert.strictEqual(s.clearStale(localProject), 1);
+  assert.strictEqual(fs.existsSync(marker), false);
+  fs.rmSync(localProject, { recursive: true, force: true });
+});
+t('clearStale preserves fresh markers and does not count them', () => {
+  const localProject = makeActiveProject('optimus-fresh-');
+  const localDir = path.join(localProject, '.optimus', 'state', s.SIDECAR_DIRNAME);
+  s.markActive(localProject, 'tooluse-fresh', 'conv-live');
+  const marker = path.join(localDir, 'tooluse-fresh');
+  assert.strictEqual(s.clearStale(localProject), 0);
+  assert.strictEqual(fs.readFileSync(marker, 'utf8'), 'conv-live');
+  s.clearActive(localProject, 'tooluse-fresh');
+  fs.rmSync(localProject, { recursive: true, force: true });
+});
+t('clearStale returns 0 outside an Optimus project', () => {
+  const nonProject = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-none-'));
+  assert.strictEqual(s.clearStale(nonProject), 0);
+});
+t('clearStale returns 0 when sidecar dir is missing', () => {
+  const bare = makeActiveProject('optimus-sidecar-');
+  assert.strictEqual(s.clearStale(bare), 0);
+});
+t('clearStale swallows unlink failures and leaves marker in place', () => {
+  const locked = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-locked-'));
+  const sidecar = path.join(locked, '.optimus', 'state', s.SIDECAR_DIRNAME);
+  fs.mkdirSync(sidecar, { recursive: true });
+  fs.writeFileSync(
+    path.join(locked, '.optimus', 'config.json'),
+    JSON.stringify({ enabled: true, updatedAt: new Date().toISOString() }),
+    'utf8',
+  );
+
+  const marker = path.join(sidecar, 'tooluse-locked');
+  fs.writeFileSync(marker, 'conv-locked', 'utf8');
+  const old = new Date(Date.now() - s.STALE_MS - 60000);
+  fs.utimesSync(marker, old, old);
+
+  const originalMode = fs.statSync(sidecar).mode & 0o777;
+  try {
+    fs.chmodSync(sidecar, 0o500);
+    assert.strictEqual(s.clearStale(locked), 0);
+    assert.strictEqual(fs.existsSync(marker), true);
+  } finally {
+    fs.chmodSync(sidecar, originalMode);
+    if (fs.existsSync(marker)) fs.unlinkSync(marker);
+    fs.rmSync(locked, { recursive: true, force: true });
+  }
+});
+t('parentConversations still sweeps stale markers on read', () => {
+  s.markActive(project, 'tooluse-lazy', 'conv-lazy');
+  const marker = path.join(dir, 'tooluse-lazy');
+  const old = new Date(Date.now() - s.STALE_MS - 60000);
+  fs.utimesSync(marker, old, old);
+  assert.strictEqual(s.parentConversations(project).size, 0);
+  assert.strictEqual(fs.existsSync(marker), false);
 });
 t('a marker with no readable parent id is ignored', () => {
   fs.mkdirSync(dir, { recursive: true });
