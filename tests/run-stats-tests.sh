@@ -34,6 +34,23 @@ write_assistant_line() {
     "$cwd" "$model" "$input" "$output" "$cache_write" "$cache_read" >>"$file"
 }
 
+# Appends an assistant turn whose content carries a Task dispatch
+# tool_use block, plus that turn's own usage. This is the "cache write on
+# dispatch" turn -- the orchestrator paying to hand context to a subagent.
+write_tool_use_line() {
+  local file="$1" cwd="$2" model="$3" tool_use_id="$4" subagent_model="$5" cache_write="$6"
+  printf '{"cwd":"%s","type":"assistant","message":{"model":"%s","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":%s,"cache_read_input_tokens":0},"content":[{"type":"tool_use","id":"%s","name":"Task","input":{"model":"%s","prompt":"go"}}]}}\n' \
+    "$cwd" "$model" "$cache_write" "$tool_use_id" "$subagent_model" >>"$file"
+}
+
+# Appends the user-role turn carrying the paired tool_result: the subagent's
+# summary coming back into the orchestrator's context.
+write_tool_result_line() {
+  local file="$1" cwd="$2" tool_use_id="$3"
+  printf '{"cwd":"%s","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":"done"}]}}\n' \
+    "$cwd" "$tool_use_id" >>"$file"
+}
+
 # Appends a non-JSON garbage line (simulates a half-written/corrupt line).
 write_garbage_line() {
   local file="$1"
@@ -153,6 +170,110 @@ write_assistant_line "$TRANSCRIPT_E" "$CWD_E" "claude-sonnet-5" 999 88 3 4
 write_garbage_line "$TRANSCRIPT_E"
 write_assistant_line "$TRANSCRIPT_E" "$CWD_E" "claude-sonnet-5" 111 22 0 0
 check_contains "(e) malformed line among valid ones does not crash" "$CFG_E" "$CWD_E" "input=1110" "$NO_DATA"
+
+echo ""
+echo "== Optimus stats: dispatch cycle parsing =="
+
+CFG_DISPATCH="$WORKDIR/cfg-dispatch-parse"
+mkdir -p "$CFG_DISPATCH/projects"
+TARGET_CWD="$WORKDIR/dispatch-parse-project"
+SLUG_DISPATCH="$(correct_slug "$TARGET_CWD")"
+PROJECTS="$CFG_DISPATCH/projects"
+mkdir -p "$PROJECTS/$SLUG_DISPATCH"
+
+SESSION="$PROJECTS/$SLUG_DISPATCH/session-a.jsonl"
+write_assistant_line   "$SESSION" "$TARGET_CWD" "claude-opus-5" 100 50 0 0
+write_tool_use_line    "$SESSION" "$TARGET_CWD" "claude-opus-5" "tu-1" "claude-haiku-4-5" 4000
+write_tool_result_line "$SESSION" "$TARGET_CWD" "tu-1"
+write_assistant_line   "$SESSION" "$TARGET_CWD" "claude-opus-5" 0 20 0 8000
+
+if node -e '
+  const s = require(process.argv[1]);
+  const cycles = s.parseOrchestratorDispatches(process.argv[2]);
+  if (cycles.length !== 1) throw new Error("expected 1 cycle, got " + cycles.length);
+  if (cycles[0].toolUseId !== "tu-1") throw new Error("wrong tool_use_id");
+  if (cycles[0].endIndex <= cycles[0].startIndex) throw new Error("result not paired");
+  console.log("ok");
+' "$STATS" "$SESSION" | grep -q ok; then
+  echo "PASS: pairs a Task tool_use with its tool_result"; pass=$((pass+1))
+else
+  echo "FAIL: dispatch cycle not parsed"; fail=$((fail+1))
+fi
+
+
+CFG_DISPATCH_NON="$WORKDIR/cfg-dispatch-parse-non"
+mkdir -p "$CFG_DISPATCH_NON/projects"
+TARGET_CWD_NON="$WORKDIR/dispatch-parse-non-project"
+SLUG_DISPATCH_NON="$(correct_slug "$TARGET_CWD_NON")"
+PROJECTS_NON="$CFG_DISPATCH_NON/projects"
+mkdir -p "$PROJECTS_NON/$SLUG_DISPATCH_NON"
+SESSION_NON="$PROJECTS_NON/$SLUG_DISPATCH_NON/session-non.jsonl"
+printf '{"cwd":"%s","type":"assistant","message":{"model":"%s","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":2000,"cache_read_input_tokens":0},"content":[{"type":"tool_use","id":"%s","name":"Read","input":{"path":"README.md"}}]}}\n' \
+  "$TARGET_CWD_NON" "claude-opus-5" "tu-non-1" >>"$SESSION_NON"
+
+if node -e '
+  const s = require(process.argv[1]);
+  const cycles = s.parseOrchestratorDispatches(process.argv[2]);
+  if (cycles.length !== 0) throw new Error("expected 0 cycles, got " + cycles.length);
+  console.log("ok");
+' "$STATS" "$SESSION_NON" | grep -q ok; then
+  echo "PASS: a non-dispatch tool_use is ignored"; pass=$((pass+1))
+else
+  echo "FAIL: non-dispatch tool_use was not ignored"; fail=$((fail+1))
+fi
+
+CFG_DISPATCH_GARBAGE="$WORKDIR/cfg-dispatch-parse-garbage"
+mkdir -p "$CFG_DISPATCH_GARBAGE/projects"
+TARGET_CWD_GARBAGE="$WORKDIR/dispatch-parse-garbage-project"
+SLUG_DISPATCH_GARBAGE="$(correct_slug "$TARGET_CWD_GARBAGE")"
+PROJECTS_GARBAGE="$CFG_DISPATCH_GARBAGE/projects"
+mkdir -p "$PROJECTS_GARBAGE/$SLUG_DISPATCH_GARBAGE"
+SESSION_GARBAGE="$PROJECTS_GARBAGE/$SLUG_DISPATCH_GARBAGE/session-garbage.jsonl"
+write_garbage_line "$SESSION_GARBAGE"
+write_tool_use_line "$SESSION_GARBAGE" "$TARGET_CWD_GARBAGE" "claude-opus-5" "tu-garbage-1" "claude-haiku-4-5" 1234
+write_garbage_line "$SESSION_GARBAGE"
+write_tool_result_line "$SESSION_GARBAGE" "$TARGET_CWD_GARBAGE" "tu-garbage-1"
+write_garbage_line "$SESSION_GARBAGE"
+
+if node -e '
+  const s = require(process.argv[1]);
+  const cycles = s.parseOrchestratorDispatches(process.argv[2]);
+  if (cycles.length !== 1) throw new Error("expected 1 cycle, got " + cycles.length);
+  if (cycles[0].endIndex === -1) throw new Error("expected paired cycle endIndex, got -1");
+  console.log("ok");
+' "$STATS" "$SESSION_GARBAGE" | grep -q ok; then
+  echo "PASS: garbage lines do not abort parsing"; pass=$((pass+1))
+else
+  echo "FAIL: garbage lines broke dispatch parsing"; fail=$((fail+1))
+fi
+
+CFG_DISPATCH_UNPAIRED="$WORKDIR/cfg-dispatch-parse-unpaired"
+mkdir -p "$CFG_DISPATCH_UNPAIRED/projects"
+TARGET_CWD_UNPAIRED="$WORKDIR/dispatch-parse-unpaired-project"
+SLUG_DISPATCH_UNPAIRED="$(correct_slug "$TARGET_CWD_UNPAIRED")"
+PROJECTS_UNPAIRED="$CFG_DISPATCH_UNPAIRED/projects"
+mkdir -p "$PROJECTS_UNPAIRED/$SLUG_DISPATCH_UNPAIRED"
+SESSION_UNPAIRED="$PROJECTS_UNPAIRED/$SLUG_DISPATCH_UNPAIRED/session-unpaired.jsonl"
+write_tool_use_line "$SESSION_UNPAIRED" "$TARGET_CWD_UNPAIRED" "claude-opus-5" "tu-unpaired-1" "claude-haiku-4-5" 2222
+
+if node -e '
+  const s = require(process.argv[1]);
+  const cycles = s.parseOrchestratorDispatches(process.argv[2]);
+  if (cycles.length !== 1) throw new Error("expected 1 cycle, got " + cycles.length);
+  if (cycles[0].endIndex !== -1) throw new Error("expected endIndex -1, got " + cycles[0].endIndex);
+  console.log("ok");
+' "$STATS" "$SESSION_UNPAIRED" | grep -q ok; then
+  echo "PASS: an unpaired dispatch is reported with endIndex === -1"; pass=$((pass+1))
+else
+  echo "FAIL: unpaired dispatch was not reported with endIndex === -1"; fail=$((fail+1))
+fi
+
+REQ_OUT="$(node -e 'require(process.argv[1])' "$STATS")"
+if [ -z "$REQ_OUT" ]; then
+  echo "PASS: requiring bin/optimus-stats as a module does not run the CLI"; pass=$((pass+1))
+else
+  echo "FAIL: requiring bin/optimus-stats produced CLI output: $REQ_OUT"; fail=$((fail+1))
+fi
 
 echo ""
 echo "== Optimus stats: enforcement ledger reporting =="

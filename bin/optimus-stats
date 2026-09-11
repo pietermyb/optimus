@@ -50,6 +50,9 @@ const PRICING = {
 const CACHE_WRITE_MULT = 1.25; // ~5-minute TTL cache write
 const CACHE_READ_MULT = 0.1;
 
+/** Tool names that mean "dispatch a subagent", across both hosts. */
+const DISPATCH_TOOLS = new Set(['Task', 'Agent']);
+
 function pricingFor(model) {
   if (!model) return null;
   const key = Object.keys(PRICING).find((k) => model.indexOf(k) === 0 || model.indexOf(k) !== -1);
@@ -244,6 +247,69 @@ function readAssistantUsage(filePath, byModel) {
     if (!byModel[msg.model]) byModel[msg.model] = emptyUsage();
     addUsage(byModel[msg.model], msg.usage);
   }
+}
+
+function readLines(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8').split('\n');
+  } catch (e) {
+    return [];
+  }
+}
+
+function parseRec(line) {
+  const t = (line || '').trim();
+  if (!t) return null;
+  try {
+    return JSON.parse(t);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Finds the dispatch cycles in an orchestrator transcript: each Task/Agent
+ * tool_use block, paired with the tool_result that closes it.
+ *
+ * The pairing is by tool_use_id, which is the only stable link between the
+ * two records. Block structure inside message.content is an undocumented
+ * Claude Code implementation detail — an unrecognizable transcript yields
+ * an empty list, which costs the report a coordinator figure but never
+ * crashes it.
+ */
+function parseOrchestratorDispatches(filePath) {
+  const lines = readLines(filePath);
+  const cycles = [];
+  const open = new Map();
+
+  lines.forEach((line, index) => {
+    const rec = parseRec(line);
+    const msg = rec && rec.message;
+    if (!msg || !Array.isArray(msg.content)) return;
+
+    for (const block of msg.content) {
+      if (!block || typeof block !== 'object') continue;
+
+      if (rec.type === 'assistant' && block.type === 'tool_use' && DISPATCH_TOOLS.has(block.name)) {
+        const cycle = {
+          toolUseId: block.id || null,
+          dispatchModel: msg.model || null,
+          subagentModel: (block.input && block.input.model) || null,
+          startIndex: index,
+          endIndex: -1,
+        };
+        cycles.push(cycle);
+        if (cycle.toolUseId) open.set(cycle.toolUseId, cycle);
+      }
+
+      if (block.type === 'tool_result' && open.has(block.tool_use_id)) {
+        open.get(block.tool_use_id).endIndex = index;
+        open.delete(block.tool_use_id);
+      }
+    }
+  });
+
+  return cycles;
 }
 
 function firstModelIn(filePath) {
@@ -707,4 +773,10 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {
+  parseOrchestratorDispatches,
+  costFor,
+  pricingFor,
+};
