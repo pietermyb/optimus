@@ -48,6 +48,85 @@ const WORK_TOOLS = new Set([
 /** Matches a model string naming the expensive tier Optimus routes work off. */
 const EXPENSIVE_MODEL_RE = /opus/i;
 
+/**
+ * Default shell read-bypass patterns. Moved here from optimus-core.js so
+ * that the default and the config override live in one file; core.js
+ * re-exports them so existing importers are unaffected.
+ */
+const DEFAULT_SHELL_BYPASS_PATTERNS = [
+  /^\s*cat\s+[^|>&;`$]+$/,
+  /^\s*head\s+/,
+  /^\s*tail\s+/,
+  /^\s*(rg|grep)\s+(?!.*(--help|--version))[^|>&;`$]*$/,
+  /^\s*find\s+\S+\s+.*-name\s/,
+  /^\s*ls\s+/,
+  /^\s*less\s+/,
+  /^\s*more\s+\S/,
+  /^\s*sed\s+-n\s/,
+];
+
+function rawConfig(cwd) {
+  try {
+    const c = getConfig(cwd);
+    return (c && c.raw && typeof c.raw === 'object') ? c.raw : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+/**
+ * The pattern deciding which model strings count as the expensive tier.
+ *
+ * Config supplies the SOURCE only; the 'i' flag is applied here. Users
+ * cannot pass flags, deliberately: a 'g'-flagged RegExp carries lastIndex
+ * between .test() calls and would make the gate intermittently wrong in a
+ * way that is very hard to diagnose from a hook.
+ *
+ * Fails open TO THE DEFAULT on anything unusable. Not to "nothing is
+ * expensive" — that would silently disable the dispatch rule for anyone
+ * who mistypes a pattern.
+ */
+function getExpensiveModelRe(cwd) {
+  const pattern = rawConfig(cwd).expensiveModelPattern;
+  if (typeof pattern !== 'string' || pattern.trim() === '') return EXPENSIVE_MODEL_RE;
+  try {
+    return new RegExp(pattern, 'i');
+  } catch (e) {
+    return EXPENSIVE_MODEL_RE;
+  }
+}
+
+/**
+ * The tools the orchestrator must delegate. A fresh Set every call, so a
+ * caller mutating the result cannot corrupt policy for the process.
+ *
+ * An EMPTY array is honoured as "gate nothing" — that is a legitimate
+ * (if odd) configuration. Only a wrong TYPE falls back to the defaults.
+ */
+function getGatedTools(cwd) {
+  const list = rawConfig(cwd).gatedTools;
+  if (!Array.isArray(list)) return new Set(WORK_TOOLS);
+  return new Set(list.filter((x) => typeof x === 'string' && x.trim() !== ''));
+}
+
+/**
+ * Shell commands that are really file reads. Each source string compiles
+ * independently: one bad entry loses that one pattern, not the whole list.
+ * An all-invalid list is indistinguishable from a broken config, so it
+ * falls back to the defaults; an explicitly empty list turns the check off.
+ */
+function getShellBypassPatterns(cwd) {
+  const list = rawConfig(cwd).shellBypassPatterns;
+  if (!Array.isArray(list)) return DEFAULT_SHELL_BYPASS_PATTERNS.slice();
+  if (list.length === 0) return [];
+  const compiled = [];
+  for (const src of list) {
+    if (typeof src !== 'string') continue;
+    try { compiled.push(new RegExp(src, 'i')); } catch (e) { /* skip this one */ }
+  }
+  return compiled.length > 0 ? compiled : DEFAULT_SHELL_BYPASS_PATTERNS.slice();
+}
+
 function isKillSwitchActive(env) {
   const e = env || process.env;
   const v = e[KILL_SWITCH_ENV];
@@ -225,6 +304,10 @@ module.exports = {
   writeFileAtomicRefusingSymlink,
   WORK_TOOLS,
   EXPENSIVE_MODEL_RE,
+  DEFAULT_SHELL_BYPASS_PATTERNS,
+  getExpensiveModelRe,
+  getGatedTools,
+  getShellBypassPatterns,
   CONFIG_DIRNAME,
   CONFIG_FILENAME,
   KILL_SWITCH_ENV,

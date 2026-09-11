@@ -13,6 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SUITES=(
   run-core-tests.sh
+  run-config-tests.sh
   run-allowance-tests.sh
   run-gate-tests.sh
   run-ledger-tests.sh

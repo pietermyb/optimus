@@ -45,6 +45,7 @@ const path = require('path');
 const {
   WORK_TOOLS: WORK_TOOLS_BASE,
   EXPENSIVE_MODEL_RE,
+  DEFAULT_SHELL_BYPASS_PATTERNS,
 } = require(path.join(__dirname, 'optimus-config.js'));
 
 /**
@@ -78,24 +79,10 @@ const WORK_TOOLS = new Set([...WORK_TOOLS_BASE, 'Delete']);
 const CMD_HEAD_MAX_LEN = 32;
 
 /**
- * Best-effort patterns for "this shell command is really just a file
- * read/search, dressed up to dodge the work-tool denial". Deliberately
- * narrow and conservative — false negatives are expected and accepted
- * (see README); the goal is raising the cost of the *casual, unprompted*
- * bypass observed during testing (a model's first instinct for "read a
- * file" was `cat`), not building a wall.
+ * Backwards-compatibility alias re-exported from optimus-config.js,
+ * where the default and configurable shell-bypass policy now live.
  */
-const SHELL_READ_PATTERNS = [
-  /^\s*cat\s+[^|>&;`$]+$/,
-  /^\s*head\s+/,
-  /^\s*tail\s+/,
-  /^\s*(rg|grep)\s+(?!.*(--help|--version))[^|>&;`$]*$/,
-  /^\s*find\s+\S+\s+.*-name\s/,
-  /^\s*ls\s+/,
-  /^\s*less\s+/,
-  /^\s*more\s+\S/,
-  /^\s*sed\s+-n\s/,
-];
+const SHELL_READ_PATTERNS = DEFAULT_SHELL_BYPASS_PATTERNS;
 
 /** Stable machine-readable deny codes. Adapters render their own wording. */
 const REASON = {
