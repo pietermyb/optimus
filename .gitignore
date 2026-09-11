@@ -6,3 +6,4 @@ node_modules/
 # Generated per-project by `optimus-cli install cursor`; hooks.json bakes in
 # absolute machine-specific paths. The tracked templates live in cursor/.
 .cursor/
+.superpowers/

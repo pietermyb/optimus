@@ -53,16 +53,18 @@ echo "-- activating Optimus for $PROJECT --"
 CLAUDE_PROJECT_DIR="$PROJECT" node "$CLI" on
 
 echo ""
-echo "-- active, no dispatch outstanding: every conversation is the orchestrator --"
-check "active: main Read DENIED"                 deny  main-read.json
-check "active: subagent-shaped Read also DENIED" deny  subagent-read.json
-check "active: Task w/o model DENIED"            deny  task-no-model.json
-check "active: Task model=inherit DENIED"        deny  task-inherit-model.json
-check "active: Task model=opus DENIED"           deny  task-opus-model.json
-check "active: Task cheap model ALLOWED"         allow task-cheap-model.json
-check "active: Shell git status ALLOWED"         allow main-shell-git.json
-check "active: Shell cat DENIED"                 deny  main-shell-cat.json
-check "active: Delete DENIED"                    deny  main-delete.json
+echo "-- active, no dispatch outstanding: per-turn inline allowance applies before deny --"
+check "active: main Read ALLOWED (allowance #1)"                     allow main-read.json
+check "active: subagent-shaped Read ALLOWED (allowance #1, own convo)" allow subagent-read.json
+check "active: subagent-shaped Read ALLOWED (allowance #2, own convo)" allow subagent-read.json
+check "active: Task w/o model DENIED"                                deny  task-no-model.json
+check "active: Task model=inherit DENIED"                            deny  task-inherit-model.json
+check "active: Task model=opus DENIED"                               deny  task-opus-model.json
+check "active: Task cheap model ALLOWED"                             allow task-cheap-model.json
+check "active: Shell git status ALLOWED"                             allow main-shell-git.json
+check "active: Shell cat ALLOWED (allowance #2 shared bucket)"       allow main-shell-cat.json
+check "active: Delete DENIED (allowance exhausted)"                  deny  main-delete.json
+check "active: Shell cat DENIED once allowance exhausted"            deny  main-shell-cat.json
 
 echo ""
 echo "-- with a dispatch outstanding: the subagent's conversation is exempt --"
@@ -101,13 +103,18 @@ if grep -q '"session_id":"probe-conv-main"' "$LEDGER"; then
 else
   echo "FAIL: ledger session_id not mapped"; fail=$((fail+1))
 fi
-for ev in work_tool_denied bash_nudge dispatch_denied dispatch_allowed; do
+for ev in work_tool_denied work_tool_inline_allowed bash_nudge dispatch_denied dispatch_allowed; do
   if grep -q "\"ev\":\"$ev\"" "$LEDGER"; then
     echo "PASS: ledger wrote $ev"; pass=$((pass+1))
   else
     echo "FAIL: ledger never wrote $ev"; fail=$((fail+1))
   fi
 done
+if grep -q '"generation_id":"probe-gen-1"' "$LEDGER"; then
+  echo "PASS: inline-allowance event carries generation_id"; pass=$((pass+1))
+else
+  echo "FAIL: generation_id missing from inline-allowance event"; fail=$((fail+1))
+fi
 if grep -q '"model":"claude-haiku-4-5"' "$LEDGER"; then
   echo "PASS: dispatch_allowed recorded the requested model verbatim"; pass=$((pass+1))
 else

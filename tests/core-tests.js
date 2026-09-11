@@ -35,13 +35,18 @@ function t(name, fn) {
 }
 
 function d(over) {
-  return decide(Object.assign({
-    tool: 'Read',
-    toolInput: {},
-    isSubagent: false,
-    sessionModel: null,
-    config: ON,
-  }, over));
+  return decide(
+    Object.assign(
+      {
+        tool: 'Read',
+        toolInput: {},
+        isSubagent: false,
+        sessionModel: null,
+        config: ON,
+      },
+      over
+    )
+  );
 }
 
 // --- activation ---------------------------------------------------------
@@ -67,10 +72,16 @@ t('dispatch with no model is denied', () => {
   assert.strictEqual(r.reason, REASON.NO_MODEL_SET);
 });
 t('dispatch with whitespace-only model is denied', () => {
-  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: '   ' } }).reason, REASON.NO_MODEL_SET);
+  assert.strictEqual(
+    d({ tool: AGENT_DISPATCH, toolInput: { model: '   ' } }).reason,
+    REASON.NO_MODEL_SET
+  );
 });
 t('dispatch with non-string model is denied', () => {
-  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 3 } }).reason, REASON.NO_MODEL_SET);
+  assert.strictEqual(
+    d({ tool: AGENT_DISPATCH, toolInput: { model: 3 } }).reason,
+    REASON.NO_MODEL_SET
+  );
 });
 t('dispatch on an opus model is denied and echoes the model', () => {
   const r = d({ tool: AGENT_DISPATCH, toolInput: { model: 'claude-opus-5' } });
@@ -79,11 +90,23 @@ t('dispatch on an opus model is denied and echoes the model', () => {
   assert.strictEqual(r.model, 'claude-opus-5');
 });
 t('dispatch on haiku is allowed', () => {
-  assert.deepStrictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'haiku' } }), { allow: true, reason: null });
+  assert.deepStrictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'haiku' } }), {
+    allow: true,
+    reason: null,
+  });
 });
 
 // --- work tools ---------------------------------------------------------
-for (const tool of ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookEdit']) {
+for (const tool of [
+  'Read',
+  'Edit',
+  'Write',
+  'Grep',
+  'Glob',
+  'WebFetch',
+  'WebSearch',
+  'NotebookEdit',
+]) {
   t('work tool ' + tool + ' is denied in the orchestrator', () => {
     const r = d({ tool: tool });
     assert.strictEqual(r.allow, false);
@@ -103,7 +126,10 @@ t('shell git status is allowed', () => {
   assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'git status' } }).allow, true);
 });
 t('shell cat is denied', () => {
-  assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'cat work.txt' } }).reason, REASON.SHELL_READ_BYPASS);
+  assert.strictEqual(
+    d({ tool: SHELL, toolInput: { command: 'cat work.txt' } }).reason,
+    REASON.SHELL_READ_BYPASS
+  );
 });
 t('shell grep --help is allowed', () => {
   assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'grep --help' } }).allow, true);
@@ -112,35 +138,151 @@ t('shell with a missing command is allowed', () => {
   assert.strictEqual(d({ tool: SHELL, toolInput: {} }).allow, true);
 });
 
+// --- inline allowance injection -----------------------------------------
+t('first N gated calls allow inline, N+1 returns existing deny reason', () => {
+  let remaining = 2;
+  let calls = 0;
+  const consume = () => {
+    calls++;
+    if (remaining > 0) {
+      remaining -= 1;
+      return { allowed: true, remaining: remaining };
+    }
+    return { allowed: false, remaining: 0 };
+  };
+
+  assert.deepStrictEqual(d({ tool: 'Read', consumeAllowance: consume }), {
+    allow: true,
+    reason: null,
+    inlineAllowance: true,
+    tool: 'Read',
+  });
+  assert.deepStrictEqual(d({ tool: 'Read', consumeAllowance: consume }), {
+    allow: true,
+    reason: null,
+    inlineAllowance: true,
+    tool: 'Read',
+  });
+
+  const denied = d({ tool: 'Read', consumeAllowance: consume });
+  assert.strictEqual(denied.allow, false);
+  assert.strictEqual(denied.reason, REASON.WORK_TOOL_IN_ORCHESTRATOR);
+  assert.strictEqual(calls, 3);
+});
+
+t('work tools and shell bypass share one allowance bucket', () => {
+  let remaining = 1;
+  const consume = () => {
+    if (remaining > 0) {
+      remaining -= 1;
+      return { allowed: true };
+    }
+    return { allowed: false };
+  };
+
+  assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'cat x.txt' }, consumeAllowance: consume }).allow, true);
+  assert.strictEqual(d({ tool: 'Read', consumeAllowance: consume }).reason, REASON.WORK_TOOL_IN_ORCHESTRATOR);
+});
+
+t('consumer is not called for subagent, inactive, dispatch, or ordinary allow paths', () => {
+  let calls = 0;
+  const consume = () => {
+    calls++;
+    return { allowed: true };
+  };
+
+  d({ isSubagent: true, consumeAllowance: consume });
+  d({ config: OFF, consumeAllowance: consume });
+  d({ tool: AGENT_DISPATCH, toolInput: { model: 'haiku' }, consumeAllowance: consume });
+  d({ tool: SHELL, toolInput: { command: 'git status' }, consumeAllowance: consume });
+
+  assert.strictEqual(calls, 0);
+});
+
 // --- model-conditional enforcement (opt-in, default off) ---------------
 t('modelConditional off: cheap session model still enforces', () => {
-  assert.strictEqual(d({ tool: 'Read', sessionModel: 'claude-haiku-4-5', config: { enabled: true } }).allow, false);
+  assert.strictEqual(
+    d({ tool: 'Read', sessionModel: 'claude-haiku-4-5', config: { enabled: true } }).allow,
+    false
+  );
 });
 t('modelConditional on: cheap session model is exempt', () => {
-  assert.strictEqual(d({ tool: 'Read', sessionModel: 'claude-haiku-4-5', config: { enabled: true, modelConditional: true } }).allow, true);
+  assert.strictEqual(
+    d({
+      tool: 'Read',
+      sessionModel: 'claude-haiku-4-5',
+      config: { enabled: true, modelConditional: true },
+    }).allow,
+    true
+  );
 });
 t('modelConditional on: expensive session model still enforces', () => {
-  assert.strictEqual(d({ tool: 'Read', sessionModel: 'claude-opus-5', config: { enabled: true, modelConditional: true } }).allow, false);
+  assert.strictEqual(
+    d({
+      tool: 'Read',
+      sessionModel: 'claude-opus-5',
+      config: { enabled: true, modelConditional: true },
+    }).allow,
+    false
+  );
 });
 t('modelConditional on with no session model still enforces', () => {
-  assert.strictEqual(d({ tool: 'Read', sessionModel: null, config: { enabled: true, modelConditional: true } }).allow, false);
+  assert.strictEqual(
+    d({ tool: 'Read', sessionModel: null, config: { enabled: true, modelConditional: true } })
+      .allow,
+    false
+  );
 });
 t('modelConditional on: a cheap session model does NOT waive the dispatch rule', () => {
   const cfg = { enabled: true, modelConditional: true };
-  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'claude-opus-5' }, sessionModel: 'claude-haiku-4-5', config: cfg }).reason, REASON.EXPENSIVE_MODEL_DISPATCH);
-  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: {}, sessionModel: 'claude-haiku-4-5', config: cfg }).reason, REASON.NO_MODEL_SET);
+  assert.strictEqual(
+    d({
+      tool: AGENT_DISPATCH,
+      toolInput: { model: 'claude-opus-5' },
+      sessionModel: 'claude-haiku-4-5',
+      config: cfg,
+    }).reason,
+    REASON.EXPENSIVE_MODEL_DISPATCH
+  );
+  assert.strictEqual(
+    d({ tool: AGENT_DISPATCH, toolInput: {}, sessionModel: 'claude-haiku-4-5', config: cfg })
+      .reason,
+    REASON.NO_MODEL_SET
+  );
 });
 t('modelConditional on: a cheap session model still allows a cheap dispatch', () => {
-  assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'haiku' }, sessionModel: 'claude-haiku-4-5', config: { enabled: true, modelConditional: true } }).allow, true);
+  assert.strictEqual(
+    d({
+      tool: AGENT_DISPATCH,
+      toolInput: { model: 'haiku' },
+      sessionModel: 'claude-haiku-4-5',
+      config: { enabled: true, modelConditional: true },
+    }).allow,
+    true
+  );
 });
 t('modelConditional on: a cheap session model still exempts the shell speed bump', () => {
-  assert.strictEqual(d({ tool: SHELL, toolInput: { command: 'cat work.txt' }, sessionModel: 'claude-haiku-4-5', config: { enabled: true, modelConditional: true } }).allow, true);
+  assert.strictEqual(
+    d({
+      tool: SHELL,
+      toolInput: { command: 'cat work.txt' },
+      sessionModel: 'claude-haiku-4-5',
+      config: { enabled: true, modelConditional: true },
+    }).allow,
+    true
+  );
 });
 
 // --- ledger event mapping ----------------------------------------------
 t('allowed dispatch maps to dispatch_allowed with model and agent_type', () => {
   const toolInput = { model: 'haiku', subagent_type: 'general-purpose' };
-  const decision = decide({ tool: AGENT_DISPATCH, toolInput, isSubagent: false, sessionModel: null, config: ON });
+  const decision = decide({
+    tool: AGENT_DISPATCH,
+    toolInput,
+    isSubagent: false,
+    sessionModel: null,
+    config: ON,
+  });
   assert.deepStrictEqual(ledgerEventFor({ tool: AGENT_DISPATCH, toolInput, decision }), {
     ev: 'dispatch_allowed',
     model: 'haiku',
@@ -149,7 +291,13 @@ t('allowed dispatch maps to dispatch_allowed with model and agent_type', () => {
 });
 t('model-less dispatch maps to dispatch_denied/no_model', () => {
   const toolInput = {};
-  const decision = decide({ tool: AGENT_DISPATCH, toolInput, isSubagent: false, sessionModel: null, config: ON });
+  const decision = decide({
+    tool: AGENT_DISPATCH,
+    toolInput,
+    isSubagent: false,
+    sessionModel: null,
+    config: ON,
+  });
   assert.deepStrictEqual(ledgerEventFor({ tool: AGENT_DISPATCH, toolInput, decision }), {
     ev: 'dispatch_denied',
     reason: 'no_model',
@@ -157,7 +305,13 @@ t('model-less dispatch maps to dispatch_denied/no_model', () => {
 });
 t('opus dispatch maps to dispatch_denied/expensive_model', () => {
   const toolInput = { model: 'claude-opus-5' };
-  const decision = decide({ tool: AGENT_DISPATCH, toolInput, isSubagent: false, sessionModel: null, config: ON });
+  const decision = decide({
+    tool: AGENT_DISPATCH,
+    toolInput,
+    isSubagent: false,
+    sessionModel: null,
+    config: ON,
+  });
   assert.deepStrictEqual(ledgerEventFor({ tool: AGENT_DISPATCH, toolInput, decision }), {
     ev: 'dispatch_denied',
     reason: 'expensive_model',
@@ -165,7 +319,13 @@ t('opus dispatch maps to dispatch_denied/expensive_model', () => {
   });
 });
 t('work tool denial maps to work_tool_denied', () => {
-  const decision = decide({ tool: 'Read', toolInput: {}, isSubagent: false, sessionModel: null, config: ON });
+  const decision = decide({
+    tool: 'Read',
+    toolInput: {},
+    isSubagent: false,
+    sessionModel: null,
+    config: ON,
+  });
   assert.deepStrictEqual(ledgerEventFor({ tool: 'Read', toolInput: {}, decision }), {
     ev: 'work_tool_denied',
     tool: 'Read',
@@ -173,15 +333,42 @@ t('work tool denial maps to work_tool_denied', () => {
 });
 t('shell bypass maps to bash_nudge with a reduced cmd_head', () => {
   const toolInput = { command: 'cat /etc/passwd' };
-  const decision = decide({ tool: SHELL, toolInput, isSubagent: false, sessionModel: null, config: ON });
+  const decision = decide({
+    tool: SHELL,
+    toolInput,
+    isSubagent: false,
+    sessionModel: null,
+    config: ON,
+  });
   assert.deepStrictEqual(ledgerEventFor({ tool: SHELL, toolInput, decision }), {
     ev: 'bash_nudge',
     cmd_head: 'cat',
   });
 });
+t('inline allowance allow maps to work_tool_inline_allowed', () => {
+  const decision = { allow: true, reason: null, inlineAllowance: true, tool: 'Read' };
+  assert.deepStrictEqual(ledgerEventFor({ tool: 'Read', toolInput: {}, decision }), {
+    ev: 'work_tool_inline_allowed',
+    tool: 'Read',
+  });
+});
+t('shell inline allowance include reduced cmd_head', () => {
+  const decision = { allow: true, reason: null, inlineAllowance: true, tool: SHELL };
+  assert.deepStrictEqual(
+    ledgerEventFor({ tool: SHELL, toolInput: { command: 'cat /secret.txt' }, decision }),
+    {
+      ev: 'work_tool_inline_allowed',
+      tool: SHELL,
+      cmd_head: 'cat',
+    }
+  );
+});
 t('an allow with no policy interest maps to null', () => {
   const decision = { allow: true, reason: null };
-  assert.strictEqual(ledgerEventFor({ tool: SHELL, toolInput: { command: 'git status' }, decision }), null);
+  assert.strictEqual(
+    ledgerEventFor({ tool: SHELL, toolInput: { command: 'git status' }, decision }),
+    null
+  );
 });
 
 // --- cmdHead ------------------------------------------------------------

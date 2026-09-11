@@ -41,6 +41,7 @@ const { isKillSwitchActive, getConfig } = require(
   path.join(__dirname, 'optimus-config.js')
 );
 const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
+const { consumeAllowance } = require(path.join(__dirname, 'optimus-allowance.js'));
 const { isSubagentConversation } = require(path.join(__dirname, 'optimus-sidecar.js'));
 const {
   decide,
@@ -226,23 +227,35 @@ function main(raw) {
     tool: tool,
     toolInput: toolInput,
     isSubagent: false,
+    consumeAllowance: () =>
+      consumeAllowance({
+        cwd: payload.cwd,
+        conversationId: payload.conversation_id,
+        generationId: payload.generation_id,
+        inlineAllowancePerTurn: cfg.inlineAllowancePerTurn,
+      }),
     // model_id was absent from every preToolUse payload observed, despite
     // being documented; model carried the plain slug. Fall back.
     sessionModel: typeof payload.model_id === 'string' ? payload.model_id : payload.model,
     config: cfg.raw && cfg.raw.modelConditional
-      ? { enabled: true, modelConditional: true }
-      : { enabled: true },
+      ? {
+          enabled: true,
+          modelConditional: true,
+          inlineAllowancePerTurn: cfg.inlineAllowancePerTurn,
+        }
+      : { enabled: true, inlineAllowancePerTurn: cfg.inlineAllowancePerTurn },
   });
 
   const event = ledgerEventFor({ tool: tool, toolInput: toolInput, decision: decision });
   if (event) {
-    recordEvent(
-      payload.cwd,
-      Object.assign(
-        { session_id: payload.conversation_id, tool_use_id: payload.tool_use_id },
-        event
-      )
-    );
+    const base = {
+      session_id: payload.conversation_id,
+      tool_use_id: payload.tool_use_id,
+    };
+    if (event.ev === 'work_tool_inline_allowed') {
+      base.generation_id = payload.generation_id;
+    }
+    recordEvent(payload.cwd, Object.assign(base, event));
   }
 
   if (decision.allow) return allow();

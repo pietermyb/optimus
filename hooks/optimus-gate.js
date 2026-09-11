@@ -30,6 +30,7 @@ const path = require('path');
 const { isKillSwitchActive, getConfig } = require(
   path.join(__dirname, 'optimus-config.js')
 );
+const { consumeAllowance } = require(path.join(__dirname, 'optimus-allowance.js'));
 const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
 const {
   decide,
@@ -134,6 +135,25 @@ function main(raw) {
   const tool = normalizeTool(payload.tool_name);
   const toolInput = payload.tool_input || {};
 
+  // Claude Code gives us a stable session key but no generation/turn key.
+  // Without a trustworthy boundary signal, an inline-allowance counter
+  // cannot honestly reset per turn, so strict deny behaviour is preserved.
+  const hasTurnKey =
+    typeof payload.session_id === 'string' &&
+    payload.session_id.trim() !== '' &&
+    typeof payload.generation_id === 'string' &&
+    payload.generation_id.trim() !== '';
+
+  const allowanceConsumer = hasTurnKey
+    ? () =>
+        consumeAllowance({
+          cwd: payload.cwd,
+          conversationId: payload.session_id,
+          generationId: payload.generation_id,
+          inlineAllowancePerTurn: cfg.inlineAllowancePerTurn,
+        })
+    : undefined;
+
   // Claude Code payloads carry no model field, and the one indirect
   // route (polling the transcript) races this hook's own invocation —
   // see limitations.md. Always null here.
@@ -142,9 +162,14 @@ function main(raw) {
     toolInput: toolInput,
     isSubagent: false,
     sessionModel: null,
+    consumeAllowance: allowanceConsumer,
     config: cfg.raw && cfg.raw.modelConditional
-      ? { enabled: true, modelConditional: true }
-      : { enabled: true },
+      ? {
+          enabled: true,
+          modelConditional: true,
+          inlineAllowancePerTurn: cfg.inlineAllowancePerTurn,
+        }
+      : { enabled: true, inlineAllowancePerTurn: cfg.inlineAllowancePerTurn },
   });
 
   const event = ledgerEventFor({ tool: tool, toolInput: toolInput, decision: decision });

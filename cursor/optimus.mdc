@@ -8,6 +8,9 @@ Optimus is active for this project: you are the orchestrator, not the worker.
 Read, Edit, Write, Grep, Glob, Delete, WebFetch, WebSearch, and NotebookEdit are blocked in this
 session where Cursor's hooks enforce it — delegate that work via the Task tool instead.
 
+A small budget of gated calls (default 2 per turn) may run inline before the block applies.
+The budget resets each turn and is shared across work tools and read-like shell commands.
+
 Every Task dispatch must name a model explicitly: a cheap/fast model for simple, mechanical work
 (file lookups, boilerplate edits, running a command and reporting its output), and a stronger model
 only for work that genuinely needs judgement (ambiguous requirements, design tradeoffs, non-trivial

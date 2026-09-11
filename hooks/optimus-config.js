@@ -31,6 +31,7 @@ const CONFIG_DIRNAME = '.optimus';
 const CONFIG_FILENAME = 'config.json';
 const MAX_WALK_LEVELS = 20;
 const MAX_CONFIG_BYTES = 4096;
+const DEFAULT_INLINE_ALLOWANCE_PER_TURN = 2;
 
 /** The set of tools treated as "work" the orchestrator must delegate. */
 const WORK_TOOLS = new Set([
@@ -51,6 +52,16 @@ function isKillSwitchActive(env) {
   const e = env || process.env;
   const v = e[KILL_SWITCH_ENV];
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+function isValidInlineAllowance(value) {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+}
+
+function validatedInlineAllowance(rawValue) {
+  return isValidInlineAllowance(rawValue)
+    ? rawValue
+    : DEFAULT_INLINE_ALLOWANCE_PER_TURN;
 }
 
 /**
@@ -95,15 +106,37 @@ function findProjectRoot(startDir) {
 
 /**
  * Resolve the effective Optimus config for a given cwd.
- * Returns { enabled: boolean, root: string|null, raw: object|null }.
+ * Returns
+ * { enabled: boolean, root: string|null, raw: object|null, inlineAllowancePerTurn: number }.
  * Never throws; a missing or unreadable config resolves to disabled.
  */
 function getConfig(cwd) {
   const root = findProjectRoot(cwd);
-  if (!root) return { enabled: false, root: null, raw: null };
+  if (!root) {
+    return {
+      enabled: false,
+      root: null,
+      raw: null,
+      inlineAllowancePerTurn: DEFAULT_INLINE_ALLOWANCE_PER_TURN,
+    };
+  }
+
   const cfg = safeReadJsonFile(path.join(root, CONFIG_DIRNAME, CONFIG_FILENAME));
-  if (!cfg || typeof cfg !== 'object') return { enabled: false, root, raw: null };
-  return { enabled: cfg.enabled === true, root, raw: cfg };
+  if (!cfg || typeof cfg !== 'object') {
+    return {
+      enabled: false,
+      root,
+      raw: null,
+      inlineAllowancePerTurn: DEFAULT_INLINE_ALLOWANCE_PER_TURN,
+    };
+  }
+
+  return {
+    enabled: cfg.enabled === true,
+    root,
+    raw: cfg,
+    inlineAllowancePerTurn: validatedInlineAllowance(cfg.inlineAllowancePerTurn),
+  };
 }
 
 /**
@@ -115,6 +148,14 @@ function getConfig(cwd) {
  * then-rename makes the replacement atomic so a reader never sees a partial
  * file. Throws on a symlink at the target, and on any fs error other than the
  * target simply not existing yet — callers decide how to present that.
+ *
+ * The temp filename mixes in pid, a timestamp, AND a random component
+ * because `flag: 'wx'` below means two writers landing on the same temp
+ * name throw EEXIST instead of silently clobbering each other. pid+time
+ * alone can still collide (two callers in the same process within the
+ * same millisecond, e.g. a caller retrying its own prior collision), so
+ * the random suffix is what actually makes a repeat collision
+ * astronomically unlikely rather than merely "unlikely".
  *
  * Exported because `bin/optimus-cli install cursor` writes into a user's
  * project and needs exactly these two properties. It must never be duplicated:
@@ -131,7 +172,14 @@ function writeFileAtomicRefusingSymlink(target, contents, mode) {
     if (e.code !== 'ENOENT') throw e;
   }
 
-  const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
+  const tmp =
+    target +
+    '.tmp-' +
+    process.pid +
+    '-' +
+    Date.now() +
+    '-' +
+    Math.random().toString(36).slice(2, 8);
   fs.writeFileSync(tmp, contents, { mode: typeof mode === 'number' ? mode : 0o600, flag: 'wx' });
   fs.renameSync(tmp, target);
 }
@@ -147,10 +195,17 @@ function setConfig(cwd, enabled) {
   fs.mkdirSync(dir, { recursive: true });
   const target = path.join(dir, CONFIG_FILENAME);
 
+  const existing = safeReadJsonFile(target);
+  const inlineAllowancePerTurn =
+    existing && typeof existing === 'object' && isValidInlineAllowance(existing.inlineAllowancePerTurn)
+      ? existing.inlineAllowancePerTurn
+      : DEFAULT_INLINE_ALLOWANCE_PER_TURN;
+
   const payload =
     JSON.stringify(
       {
         enabled: !!enabled,
+        inlineAllowancePerTurn: inlineAllowancePerTurn,
         updatedAt: new Date().toISOString(),
       },
       null,
@@ -173,4 +228,5 @@ module.exports = {
   CONFIG_DIRNAME,
   CONFIG_FILENAME,
   KILL_SWITCH_ENV,
+  DEFAULT_INLINE_ALLOWANCE_PER_TURN,
 };

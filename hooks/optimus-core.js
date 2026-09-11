@@ -30,9 +30,11 @@
  *      only the two checks below it (work tools, shell speed bump),
  *      never the dispatch-model rule above it. See the comment on that
  *      block for why.
- *   5. Work tools denied.
+ *   5. Work tools denied unless an injected allowance consumer grants a
+ *      turn-scoped inline budget unit.
  *   6. Shell read-bypass speed bump (explicitly NOT a security
- *      boundary — see README).
+ *      boundary — see README), with the same single allowance bucket as
+ *      step 5.
  *
  * The kill switch is NOT checked here. It is host plumbing: each adapter
  * checks isKillSwitchActive() before it ever builds a decide() call, so
@@ -134,12 +136,34 @@ const ALLOW = { allow: true, reason: null };
  *                                           provides one (Cursor does, Claude Code
  *                                           does not — pass null). Only consulted
  *                                           when config.modelConditional is true.
+ * @param {Function=}     input.consumeAllowance optional injected allowance
+ *                                           consumer from host plumbing. Called at
+ *                                           most once and only when step 5 or 6
+ *                                           would otherwise deny.
  * @param {{enabled: boolean, modelConditional?: boolean}} input.config
- * @returns {{allow: boolean, reason: string|null, tool?: string, model?: string}}
+ * @returns {{allow: boolean, reason: string|null, tool?: string, model?: string, inlineAllowance?: boolean}}
  */
-function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
+function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, config }) {
   const cfg = config || {};
   const input = toolInput || {};
+
+  let allowanceChecked = false;
+  let allowanceGranted = false;
+
+  function tryInlineAllowance() {
+    if (allowanceChecked) return allowanceGranted;
+    allowanceChecked = true;
+
+    if (typeof consumeAllowance !== 'function') return false;
+
+    try {
+      const result = consumeAllowance();
+      allowanceGranted = !!(result && result.allowed === true);
+      return allowanceGranted;
+    } catch (e) {
+      return false;
+    }
+  }
 
   // 1 — subagent exemption. Load-bearing; must stay first.
   if (isSubagent) return ALLOW;
@@ -184,13 +208,20 @@ function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
     return ALLOW;
   }
 
-  // 5 — work tools denied in the orchestrator while Optimus is active.
+  // 5 — work tools denied in the orchestrator while Optimus is active,
+  // unless an allowance unit is granted inline for this turn.
   if (WORK_TOOLS.has(tool)) {
+    if (tryInlineAllowance()) {
+      return { allow: true, reason: null, inlineAllowance: true, tool: tool };
+    }
     return { allow: false, reason: REASON.WORK_TOOL_IN_ORCHESTRATOR, tool: tool };
   }
 
   // 6 — shell: best-effort speed bump only, not a security boundary.
   if (tool === SHELL && isReadBypassCommand(input.command)) {
+    if (tryInlineAllowance()) {
+      return { allow: true, reason: null, inlineAllowance: true, tool: tool };
+    }
     return { allow: false, reason: REASON.SHELL_READ_BYPASS };
   }
 
@@ -211,6 +242,13 @@ function decide({ tool, toolInput, isSubagent, sessionModel, config }) {
 function ledgerEventFor({ tool, toolInput, decision }) {
   const input = toolInput || {};
   const dec = decision || {};
+
+  if (dec.allow && dec.inlineAllowance === true) {
+    if (tool === SHELL) {
+      return { ev: 'work_tool_inline_allowed', tool: tool, cmd_head: cmdHead(input.command) };
+    }
+    return { ev: 'work_tool_inline_allowed', tool: tool };
+  }
 
   if (tool === AGENT_DISPATCH) {
     if (dec.allow) {

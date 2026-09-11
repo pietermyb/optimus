@@ -430,6 +430,7 @@ function tallyLedgerEvents(events) {
     dispatchAllowed: 0,
     deniedByReason: {},
     workToolDeniedByTool: {},
+    inlineAllowedByTool: {},
     bashNudgeByCmdHead: {},
     requestedFamily: {},
   };
@@ -449,6 +450,11 @@ function tallyLedgerEvents(events) {
       case 'work_tool_denied': {
         const tool = typeof rec.tool === 'string' ? rec.tool : 'unknown';
         tally.workToolDeniedByTool[tool] = (tally.workToolDeniedByTool[tool] || 0) + 1;
+        break;
+      }
+      case 'work_tool_inline_allowed': {
+        const tool = typeof rec.tool === 'string' ? rec.tool : 'unknown';
+        tally.inlineAllowedByTool[tool] = (tally.inlineAllowedByTool[tool] || 0) + 1;
         break;
       }
       case 'bash_nudge': {
@@ -484,6 +490,12 @@ function printLedgerSection(ledger, dispatchesByModel) {
     '  work-tool denials by tool  : ' +
       (Object.keys(tally.workToolDeniedByTool).length
         ? JSON.stringify(tally.workToolDeniedByTool)
+        : '(none)')
+  );
+  console.log(
+    '  work-tool inline allowed   : ' +
+      (Object.keys(tally.inlineAllowedByTool).length
+        ? JSON.stringify(tally.inlineAllowedByTool)
         : '(none)')
   );
   console.log(
