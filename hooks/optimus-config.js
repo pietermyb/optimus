@@ -45,6 +45,23 @@ const WORK_TOOLS = new Set([
   'NotebookEdit',
 ]);
 
+/**
+ * The default gated set: WORK_TOOLS plus Cursor's Delete.
+ *
+ * Cursor exposes a distinct Delete tool with no Claude Code equivalent.
+ * Maintainer decision (spec Section 4): it is a work tool — the
+ * orchestrator delegates file deletion like any other file mutation. It
+ * is inert on Claude Code, which has no tool by that name.
+ *
+ * This, and not WORK_TOOLS, is what getGatedTools() falls back to, and it
+ * is the same set decide() gates when no policy is injected. That
+ * equality is the point: an adapter can pass getGatedTools()'s result
+ * straight into decide() and need patch nothing afterwards. WORK_TOOLS
+ * keeps its narrower published meaning for callers that want the
+ * host-neutral set.
+ */
+const DEFAULT_GATED_TOOLS = new Set([...WORK_TOOLS, 'Delete']);
+
 /** Matches a model string naming the expensive tier Optimus routes work off. */
 const EXPENSIVE_MODEL_RE = /opus/i;
 
@@ -102,10 +119,14 @@ function getExpensiveModelRe(cwd) {
  *
  * An EMPTY array is honoured as "gate nothing" — that is a legitimate
  * (if odd) configuration. Only a wrong TYPE falls back to the defaults.
+ *
+ * An explicit list is returned verbatim (minus unusable entries), never
+ * unioned with the defaults: a project that names its own gated tools
+ * owns that set completely.
  */
 function getGatedTools(cwd) {
   const list = rawConfig(cwd).gatedTools;
-  if (!Array.isArray(list)) return new Set(WORK_TOOLS);
+  if (!Array.isArray(list)) return new Set(DEFAULT_GATED_TOOLS);
   return new Set(list.filter((x) => typeof x === 'string' && x.trim() !== ''));
 }
 
@@ -303,6 +324,7 @@ module.exports = {
   findProjectRoot,
   writeFileAtomicRefusingSymlink,
   WORK_TOOLS,
+  DEFAULT_GATED_TOOLS,
   EXPENSIVE_MODEL_RE,
   DEFAULT_SHELL_BYPASS_PATTERNS,
   getExpensiveModelRe,

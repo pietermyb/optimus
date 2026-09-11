@@ -43,7 +43,7 @@
 
 const path = require('path');
 const {
-  WORK_TOOLS: WORK_TOOLS_BASE,
+  DEFAULT_GATED_TOOLS,
   EXPENSIVE_MODEL_RE,
   DEFAULT_SHELL_BYPASS_PATTERNS,
 } = require(path.join(__dirname, 'optimus-config.js'));
@@ -65,15 +65,16 @@ const AGENT_DISPATCH = 'AGENT_DISPATCH';
 const SHELL = 'SHELL';
 
 /**
- * Work tools: optimus-config.js's set, plus Cursor's Delete.
+ * Work tools: optimus-config.js's DEFAULT_GATED_TOOLS, which already
+ * folds in Cursor's Delete (see the comment there for why Delete counts).
  *
- * Cursor exposes a distinct Delete tool with no Claude Code equivalent.
- * Maintainer decision (spec Section 4): it is a work tool — the
- * orchestrator delegates file deletion like any other file mutation.
- * Adding it here rather than in the Cursor adapter keeps the set in one
- * place; it is inert on Claude Code, which has no tool by that name.
+ * Deliberately the very same set getGatedTools() falls back to, rather
+ * than a second "+ Delete" spelled out here. When the resolver's default
+ * and this default can drift, every adapter has to top up whatever the
+ * resolver returned — which puts policy in the adapter layer, once per
+ * host, and is exactly what this module exists to prevent.
  */
-const WORK_TOOLS = new Set([...WORK_TOOLS_BASE, 'Delete']);
+const WORK_TOOLS = new Set(DEFAULT_GATED_TOOLS);
 
 /** Max length of the cmd_head field logged for a shell nudge. */
 const CMD_HEAD_MAX_LEN = 32;

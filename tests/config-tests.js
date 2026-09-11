@@ -8,6 +8,7 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const cfg = require(path.join(root, 'hooks', 'optimus-config.js'));
+const core = require(path.join(root, 'hooks', 'optimus-core.js'));
 
 let pass = 0, fail = 0;
 function t(name, fn) {
@@ -80,6 +81,33 @@ t('the returned set is not the module constant', () => {
   assert.strictEqual(cfg.WORK_TOOLS.has('Mutated'), false);
 });
 
+// The default must be the FULL effective gated set, Delete included, so
+// that an adapter can hand the result straight to decide() without
+// topping it up. That top-up used to live in both gate adapters; these
+// three tests are what stops it coming back.
+t('the default gated set includes Cursor Delete', () => {
+  assert.strictEqual(cfg.getGatedTools(project(BASE)).has('Delete'), true);
+});
+t('the default gated set is exactly what decide() gates with no policy', () => {
+  assert.deepStrictEqual(
+    [...cfg.getGatedTools(project(BASE))].sort(),
+    [...core.WORK_TOOLS].sort()
+  );
+});
+t('an explicit override is returned verbatim, NOT unioned with Delete', () => {
+  const tools = cfg.getGatedTools(project(Object.assign({}, BASE, { gatedTools: ['Read'] })));
+  assert.deepStrictEqual([...tools], ['Read']);
+  assert.strictEqual(tools.has('Delete'), false);
+});
+t('an override naming Delete alone gates only Delete', () => {
+  const tools = cfg.getGatedTools(project(Object.assign({}, BASE, { gatedTools: ['Delete'] })));
+  assert.deepStrictEqual([...tools], ['Delete']);
+});
+t('WORK_TOOLS itself stays host-neutral: no Delete', () => {
+  assert.strictEqual(cfg.WORK_TOOLS.has('Delete'), false);
+  assert.strictEqual(cfg.DEFAULT_GATED_TOOLS.has('Delete'), true);
+});
+
 // --- shellBypassPatterns ------------------------------------------------
 const matchesAny = (pats, cmd) => pats.some((p) => p.test(cmd));
 
@@ -112,6 +140,7 @@ t('a directory with no .optimus still yields defaults, never throws', () => {
   const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-bare-'));
   assert.strictEqual(cfg.getExpensiveModelRe(bare).test('claude-opus-5'), true);
   assert.strictEqual(cfg.getGatedTools(bare).has('Read'), true);
+  assert.strictEqual(cfg.getGatedTools(bare).has('Delete'), true);
   assert.strictEqual(cfg.getShellBypassPatterns(bare).length > 0, true);
 });
 

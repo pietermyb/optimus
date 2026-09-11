@@ -116,6 +116,15 @@ custom_bat_payload="$(printf '{"session_id":"test-session","transcript_path":"/t
 check_payload "default policy: Bash bat ALLOWED" allow "$default_bat_payload"
 check_payload "custom policy: Bash bat DENIED" deny "$custom_bat_payload"
 
+# Delete is in the gated set by way of getGatedTools()'s default, not by
+# this adapter topping the resolved set up afterwards. These two pin the
+# end-to-end outcome either way round: gated by default, ungated the
+# moment a project names its own gatedTools.
+default_delete_payload="$(printf '{"session_id":"test-session","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Delete","tool_input":{"path":"work.txt"},"tool_use_id":"toolu_fixture_delete_default"}' "$PROJECT")"
+custom_delete_payload="$(printf '{"session_id":"test-session","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Delete","tool_input":{"path":"work.txt"},"tool_use_id":"toolu_fixture_delete_custom"}' "$CUSTOM")"
+check_payload "default policy: Delete DENIED (from the resolver default)" deny "$default_delete_payload"
+check_payload "custom policy: Delete ALLOWED (override not unioned with Delete)" allow "$custom_delete_payload"
+
 echo ""
 echo "-- no-policy-keys regression: behavior stays byte-identical --"
 MINIMAL="$WORKDIR/project-minimal"

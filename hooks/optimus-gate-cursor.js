@@ -228,12 +228,8 @@ function main(raw) {
   const tool = normalizeTool(payload.tool_name);
   const toolInput = normalizeInput(tool, payload.tool_input);
   const projectDir = cfg.root || payload.cwd;
-  const gatedTools = getGatedTools(projectDir);
-  if (!cfg.raw || !Array.isArray(cfg.raw.gatedTools)) {
-    gatedTools.add('Delete');
-  }
   const policy = {
-    gatedTools: gatedTools,
+    gatedTools: getGatedTools(projectDir),
     expensiveModelRe: getExpensiveModelRe(projectDir),
     shellBypassPatterns: getShellBypassPatterns(projectDir),
   };
