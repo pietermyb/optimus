@@ -135,12 +135,55 @@ t('an empty override list means "bypass check off"', () => {
   assert.deepStrictEqual(pats, []);
 });
 
+// --- gatedToolPatterns --------------------------------------------------
+const matchesAnyName = (pats, name) => pats.some((p) => p.test(name));
+
+t('absent by default: no patterns, so nothing extra is gated', () => {
+  assert.deepStrictEqual(cfg.getGatedToolPatterns(project(BASE)), []);
+});
+t('mcp__* matches every MCP tool but no built-in tool', () => {
+  const pats = cfg.getGatedToolPatterns(project(Object.assign({}, BASE, { gatedToolPatterns: ['mcp__*'] })));
+  assert.strictEqual(matchesAnyName(pats, 'mcp__grafana-multi__query_loki_logs'), true);
+  assert.strictEqual(matchesAnyName(pats, 'mcp__github__list_issues'), true);
+  assert.strictEqual(matchesAnyName(pats, 'Read'), false);
+  assert.strictEqual(matchesAnyName(pats, 'Bash'), false);
+});
+t('* is the only wildcard: a . in a tool name is a literal, not any-char', () => {
+  const pats = cfg.getGatedToolPatterns(project(Object.assign({}, BASE, { gatedToolPatterns: ['mcp__foo.bar__*'] })));
+  assert.strictEqual(matchesAnyName(pats, 'mcp__foo.bar__do'), true);
+  assert.strictEqual(matchesAnyName(pats, 'mcp__fooXbar__do'), false);
+});
+t('the glob is anchored: a prefix match alone does not gate', () => {
+  const pats = cfg.getGatedToolPatterns(project(Object.assign({}, BASE, { gatedToolPatterns: ['mcp__github'] })));
+  assert.strictEqual(matchesAnyName(pats, 'mcp__github'), true);
+  assert.strictEqual(matchesAnyName(pats, 'mcp__github__list_issues'), false);
+});
+t('the match is case-sensitive', () => {
+  const pats = cfg.getGatedToolPatterns(project(Object.assign({}, BASE, { gatedToolPatterns: ['Read'] })));
+  assert.strictEqual(matchesAnyName(pats, 'Read'), true);
+  assert.strictEqual(matchesAnyName(pats, 'read'), false);
+});
+t('a non-string entry is skipped, the valid ones survive', () => {
+  const pats = cfg.getGatedToolPatterns(project(Object.assign({}, BASE, { gatedToolPatterns: [7, null, 'mcp__*'] })));
+  assert.strictEqual(pats.length, 1);
+  assert.strictEqual(matchesAnyName(pats, 'mcp__x__y'), true);
+});
+t('a non-array value yields no patterns', () => {
+  assert.deepStrictEqual(cfg.getGatedToolPatterns(project(Object.assign({}, BASE, { gatedToolPatterns: 'mcp__*' }))), []);
+});
+t('globToRegExp escapes regex metacharacters other than *', () => {
+  const re = cfg.globToRegExp('a+b(*)');
+  assert.strictEqual(re.test('a+b(zzz)'), true);
+  assert.strictEqual(re.test('aab(z)'), false);
+});
+
 // --- no project ---------------------------------------------------------
 t('a directory with no .optimus still yields defaults, never throws', () => {
   const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-bare-'));
   assert.strictEqual(cfg.getExpensiveModelRe(bare).test('claude-opus-5'), true);
   assert.strictEqual(cfg.getGatedTools(bare).has('Read'), true);
   assert.strictEqual(cfg.getGatedTools(bare).has('Delete'), true);
+  assert.deepStrictEqual(cfg.getGatedToolPatterns(bare), []);
   assert.strictEqual(cfg.getShellBypassPatterns(bare).length > 0, true);
 });
 
