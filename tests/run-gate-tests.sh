@@ -39,6 +39,24 @@ check() {
   fi
 }
 
+
+check_payload() {
+  local name="$1" expect="$2" payload="$3" extra_env="${4:-}"
+  local out
+  out="$(env $extra_env node "$GATE" <<<"$payload")"
+  local decision="allow"
+  if echo "$out" | grep -q '"permissionDecision":"deny"'; then
+    decision="deny"
+  fi
+  if [ "$decision" == "$expect" ]; then
+    echo "PASS: $name (got $decision)"
+    pass=$((pass+1))
+  else
+    echo "FAIL: $name (expected $expect, got $decision) -- output: $out"
+    fail=$((fail+1))
+  fi
+}
+
 check_msg() {
   local name="$1" fixture="$2" cwd="$3" needle="$4"
   local payload out
@@ -71,6 +89,52 @@ check "active: Agent model=opus DENIED"           deny  agent-opus-model.json "$
 check "active: Agent model=haiku ALLOWED"         allow agent-haiku-model.json "$PROJECT"
 check "active: Bash git status ALLOWED"           allow main-bash-git.json   "$PROJECT"
 check "active: Bash cat work.txt DENIED (best-effort)" deny main-bash-cat.json "$PROJECT"
+
+echo ""
+echo "-- configurable policy: per-project override changes outcomes --"
+CUSTOM="$WORKDIR/project-custom"
+mkdir -p "$CUSTOM/.optimus"
+cat >"$CUSTOM/.optimus/config.json" <<'JSON'
+{
+  "enabled": true,
+  "updatedAt": "2026-09-11T00:00:00.000Z",
+  "inlineAllowancePerTurn": 2,
+  "gatedTools": ["Read"],
+  "expensiveModelPattern": "gpt-5",
+  "shellBypassPatterns": ["^\\s*bat\\s+"]
+}
+JSON
+
+check "default policy: Agent opus DENIED" deny agent-opus-model.json "$PROJECT"
+check "custom policy: Agent opus ALLOWED" allow agent-opus-model.json "$CUSTOM"
+
+custom_gpt5_payload="$(printf '{"session_id":"test-session","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"description":"Read work.txt and report","prompt":"read work.txt","subagent_type":"general-purpose","model":"gpt-5"},"tool_use_id":"toolu_fixture_cfg_gpt5"}' "$CUSTOM")"
+check_payload "custom policy: Agent gpt-5 DENIED" deny "$custom_gpt5_payload"
+
+default_bat_payload="$(printf '{"session_id":"test-session","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bat work.txt","description":"read work.txt"},"tool_use_id":"toolu_fixture_cfg_bat_default"}' "$PROJECT")"
+custom_bat_payload="$(printf '{"session_id":"test-session","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"bat work.txt","description":"read work.txt"},"tool_use_id":"toolu_fixture_cfg_bat_custom"}' "$CUSTOM")"
+check_payload "default policy: Bash bat ALLOWED" allow "$default_bat_payload"
+check_payload "custom policy: Bash bat DENIED" deny "$custom_bat_payload"
+
+echo ""
+echo "-- no-policy-keys regression: behavior stays byte-identical --"
+MINIMAL="$WORKDIR/project-minimal"
+mkdir -p "$MINIMAL/.optimus"
+cat >"$MINIMAL/.optimus/config.json" <<'JSON'
+{
+  "enabled": true,
+  "updatedAt": "2026-09-11T00:00:00.000Z"
+}
+JSON
+default_main_read_out="$(sed "s#__PROJECT__#$PROJECT#" "$FIXTURES/main-read.json" | node "$GATE")"
+minimal_main_read_out="$(sed "s#__PROJECT__#$MINIMAL#" "$FIXTURES/main-read.json" | node "$GATE")"
+if [ "$default_main_read_out" == "$minimal_main_read_out" ]; then
+  echo "PASS: minimal config matches default output for Read deny"
+  pass=$((pass+1))
+else
+  echo "FAIL: minimal config diverged for Read deny -- default: $default_main_read_out -- minimal: $minimal_main_read_out"
+  fail=$((fail+1))
+fi
 
 echo ""
 echo "-- deny message wording (guards user-facing text against refactors) --"

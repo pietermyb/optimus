@@ -37,9 +37,14 @@
  */
 
 const path = require('path');
-const { isKillSwitchActive, getConfig } = require(
-  path.join(__dirname, 'optimus-config.js')
-);
+const {
+  isKillSwitchActive,
+  getConfig,
+  getExpensiveModelRe,
+  getGatedTools,
+  getShellBypassPatterns,
+} = require(path.join(__dirname, 'optimus-config.js'));
+
 const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
 const { consumeAllowance } = require(path.join(__dirname, 'optimus-allowance.js'));
 const { isSubagentConversation } = require(path.join(__dirname, 'optimus-sidecar.js'));
@@ -222,6 +227,16 @@ function main(raw) {
 
   const tool = normalizeTool(payload.tool_name);
   const toolInput = normalizeInput(tool, payload.tool_input);
+  const projectDir = cfg.root || payload.cwd;
+  const gatedTools = getGatedTools(projectDir);
+  if (!cfg.raw || !Array.isArray(cfg.raw.gatedTools)) {
+    gatedTools.add('Delete');
+  }
+  const policy = {
+    gatedTools: gatedTools,
+    expensiveModelRe: getExpensiveModelRe(projectDir),
+    shellBypassPatterns: getShellBypassPatterns(projectDir),
+  };
 
   const decision = decide({
     tool: tool,
@@ -244,6 +259,7 @@ function main(raw) {
           inlineAllowancePerTurn: cfg.inlineAllowancePerTurn,
         }
       : { enabled: true, inlineAllowancePerTurn: cfg.inlineAllowancePerTurn },
+    policy: policy,
   });
 
   const event = ledgerEventFor({ tool: tool, toolInput: toolInput, decision: decision });

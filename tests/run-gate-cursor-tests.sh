@@ -43,6 +43,50 @@ check() {
   fi
 }
 
+
+render_for_project() {
+  local project="$1" fixture="$2"
+  sed "s#__PROJECT__#$project#g" "$FIXTURES/$fixture"
+}
+
+check_for_project() {
+  local name="$1" expect="$2" fixture="$3" project="$4" extra_env="${5:-}"
+  local out decision
+  out="$(render_for_project "$project" "$fixture" | env $extra_env node "$GATE")"
+  decision="unparseable"
+  if echo "$out" | grep -q '"permission":"deny"'; then
+    decision="deny"
+  elif echo "$out" | grep -q '"permission":"allow"'; then
+    decision="allow"
+  fi
+  if [ "$decision" == "$expect" ]; then
+    echo "PASS: $name (got $decision)"
+    pass=$((pass+1))
+  else
+    echo "FAIL: $name (expected $expect, got $decision) -- output: $out"
+    fail=$((fail+1))
+  fi
+}
+
+check_payload() {
+  local name="$1" expect="$2" payload="$3" extra_env="${4:-}"
+  local out decision
+  out="$(printf '%s' "$payload" | env $extra_env node "$GATE")"
+  decision="unparseable"
+  if echo "$out" | grep -q '"permission":"deny"'; then
+    decision="deny"
+  elif echo "$out" | grep -q '"permission":"allow"'; then
+    decision="allow"
+  fi
+  if [ "$decision" == "$expect" ]; then
+    echo "PASS: $name (got $decision)"
+    pass=$((pass+1))
+  else
+    echo "FAIL: $name (expected $expect, got $decision) -- output: $out"
+    fail=$((fail+1))
+  fi
+}
+
 echo "== Optimus Cursor gate tests =="
 echo "-- inactive project: everything allows, with explicit allow JSON --"
 check "inactive: main Read allowed"     allow main-read.json
@@ -65,6 +109,74 @@ check "active: Shell git status ALLOWED"                             allow main-
 check "active: Shell cat ALLOWED (allowance #2 shared bucket)"       allow main-shell-cat.json
 check "active: Delete DENIED (allowance exhausted)"                  deny  main-delete.json
 check "active: Shell cat DENIED once allowance exhausted"            deny  main-shell-cat.json
+
+echo ""
+echo "-- configurable policy: per-project override changes outcomes --"
+CUSTOM_PROJECT="$WORKDIR/project-custom"
+mkdir -p "$CUSTOM_PROJECT/.optimus"
+cat >"$CUSTOM_PROJECT/.optimus/config.json" <<'JSON'
+{
+  "enabled": true,
+  "updatedAt": "2026-09-11T00:00:00.000Z",
+  "inlineAllowancePerTurn": 0,
+  "gatedTools": ["Read"],
+  "expensiveModelPattern": "gpt-5",
+  "shellBypassPatterns": ["^\\s*bat\\s+"]
+}
+JSON
+
+check "default policy: Task opus DENIED" deny task-opus-model.json
+check_for_project "custom policy: Task opus ALLOWED" allow task-opus-model.json "$CUSTOM_PROJECT"
+
+custom_task_gpt5_payload="$(printf '{"hook_event_name":"preToolUse","conversation_id":"cfg-conv-main","session_id":"cfg-conv-main","generation_id":"cfg-gen-1","model":"claude-opus-5","cursor_version":"3.19.13","workspace_roots":["%s"],"transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","tool_name":"Task","tool_input":{"description":"read work.txt","prompt":"read work.txt","subagent_type":"explore","model":"gpt-5"},"tool_use_id":"toolu_bdrk_cfg_task_gpt5","agent_message":"Reading work.txt"}' "$CUSTOM_PROJECT" "$CUSTOM_PROJECT")"
+check_payload "custom policy: Task gpt-5 DENIED" deny "$custom_task_gpt5_payload"
+
+default_shell_bat_payload="$(printf '{"hook_event_name":"preToolUse","conversation_id":"cfg-conv-main","session_id":"cfg-conv-main","generation_id":"cfg-gen-1","model":"claude-opus-5","cursor_version":"3.19.13","workspace_roots":["%s"],"transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","tool_name":"Shell","tool_input":{"command":"bat work.txt","cwd":"%s","timeout":120000},"tool_use_id":"toolu_bdrk_cfg_shell_bat_default","agent_message":"Reading work.txt"}' "$PROJECT" "$PROJECT" "$PROJECT")"
+custom_shell_bat_payload="$(printf '{"hook_event_name":"preToolUse","conversation_id":"cfg-conv-main","session_id":"cfg-conv-main","generation_id":"cfg-gen-1","model":"claude-opus-5","cursor_version":"3.19.13","workspace_roots":["%s"],"transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","tool_name":"Shell","tool_input":{"command":"bat work.txt","cwd":"%s","timeout":120000},"tool_use_id":"toolu_bdrk_cfg_shell_bat_custom","agent_message":"Reading work.txt"}' "$CUSTOM_PROJECT" "$CUSTOM_PROJECT" "$CUSTOM_PROJECT")"
+check_payload "default policy: Shell bat ALLOWED" allow "$default_shell_bat_payload"
+check_payload "custom policy: Shell bat DENIED" deny "$custom_shell_bat_payload"
+
+echo ""
+echo "-- no-policy-keys regression: behavior stays byte-identical --"
+MINIMAL_PROJECT="$WORKDIR/project-minimal"
+mkdir -p "$MINIMAL_PROJECT/.optimus"
+cat >"$MINIMAL_PROJECT/.optimus/config.json" <<'JSON'
+{
+  "enabled": true,
+  "updatedAt": "2026-09-11T00:00:00.000Z"
+}
+JSON
+default_task_opus_out="$(render task-opus-model.json | node "$GATE")"
+minimal_task_opus_out="$(render_for_project "$MINIMAL_PROJECT" task-opus-model.json | node "$GATE")"
+if [ "$default_task_opus_out" == "$minimal_task_opus_out" ]; then
+  echo "PASS: minimal config matches default output for Task opus deny"
+  pass=$((pass+1))
+else
+  echo "FAIL: minimal config diverged for Task opus deny -- default: $default_task_opus_out -- minimal: $minimal_task_opus_out"
+  fail=$((fail+1))
+fi
+
+echo ""
+echo "-- configurable policy drives allowance consumption (Cursor only) --"
+ALLOW_PROJECT="$WORKDIR/project-allowance"
+mkdir -p "$ALLOW_PROJECT/.optimus"
+cat >"$ALLOW_PROJECT/.optimus/config.json" <<'JSON'
+{
+  "enabled": true,
+  "updatedAt": "2026-09-11T00:00:00.000Z",
+  "inlineAllowancePerTurn": 2,
+  "gatedTools": ["Read"],
+  "expensiveModelPattern": "opus",
+  "shellBypassPatterns": ["^\\s*cat\\s+"]
+}
+JSON
+
+allow_delete_payload="$(printf '{"hook_event_name":"preToolUse","conversation_id":"cfg-allow-conv","session_id":"cfg-allow-conv","generation_id":"cfg-allow-gen","model":"claude-opus-5","cursor_version":"3.19.13","workspace_roots":["%s"],"transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","tool_name":"Delete","tool_input":{"file_path":"work.txt"},"tool_use_id":"toolu_bdrk_cfg_allow_delete","agent_message":"Delete work.txt"}' "$ALLOW_PROJECT" "$ALLOW_PROJECT")"
+allow_read_payload="$(printf '{"hook_event_name":"preToolUse","conversation_id":"cfg-allow-conv","session_id":"cfg-allow-conv","generation_id":"cfg-allow-gen","model":"claude-opus-5","cursor_version":"3.19.13","workspace_roots":["%s"],"transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","tool_name":"Read","tool_input":{"file_path":"work.txt"},"tool_use_id":"toolu_bdrk_cfg_allow_read","agent_message":"Read work.txt"}' "$ALLOW_PROJECT" "$ALLOW_PROJECT")"
+
+check_payload "allowance policy: Delete is ungated and allowed" allow "$allow_delete_payload"
+check_payload "allowance policy: Read #1 allowed" allow "$allow_read_payload"
+check_payload "allowance policy: Read #2 still allowed" allow "$allow_read_payload"
 
 echo ""
 echo "-- with a dispatch outstanding: the subagent's conversation is exempt --"
