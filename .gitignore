@@ -7,3 +7,6 @@ node_modules/
 # absolute machine-specific paths. The tracked templates live in cursor/.
 .cursor/
 .superpowers/
+
+# Specs and plans are kept private
+docs/
