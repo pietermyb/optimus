@@ -276,6 +276,101 @@ else
 fi
 
 echo ""
+echo "== Optimus stats: coordinator token attribution =="
+
+CFG_COORD_UNPAIRED="$WORKDIR/cfg-coord-unpaired"
+mkdir -p "$CFG_COORD_UNPAIRED/projects"
+TARGET_CWD_COORD_UNPAIRED="$WORKDIR/coord-unpaired-project"
+SLUG_COORD_UNPAIRED="$(correct_slug "$TARGET_CWD_COORD_UNPAIRED")"
+PROJECTS_COORD_UNPAIRED="$CFG_COORD_UNPAIRED/projects"
+mkdir -p "$PROJECTS_COORD_UNPAIRED/$SLUG_COORD_UNPAIRED"
+SESSION_COORD_UNPAIRED="$PROJECTS_COORD_UNPAIRED/$SLUG_COORD_UNPAIRED/session-coord-unpaired.jsonl"
+write_tool_use_line "$SESSION_COORD_UNPAIRED" "$TARGET_CWD_COORD_UNPAIRED" "claude-opus-5" "tu-coord-unpaired-1" "claude-haiku-4-5" 3000
+
+if node -e '
+  const s = require(process.argv[1]);
+  const c = s.coordinatorUsageFor(process.argv[2]);
+  if (c.cycles !== 1) throw new Error("expected 1 cycle, got " + c.cycles);
+  if (c.unresolved !== 1) throw new Error("expected 1 unresolved, got " + c.unresolved);
+  const u = c.byModel["claude-opus-5"];
+  if (!u) throw new Error("dispatch-side model missing from byModel");
+  if (u.cache_creation_input_tokens !== 3000) throw new Error("dispatch cache write not attributed, got " + u.cache_creation_input_tokens);
+  console.log("ok");
+' "$STATS" "$SESSION_COORD_UNPAIRED" | grep -q ok; then
+  echo "PASS: an unpaired dispatch is reported as unresolved"; pass=$((pass+1))
+else
+  echo "FAIL: unpaired dispatch not reported as unresolved by coordinatorUsageFor"; fail=$((fail+1))
+fi
+
+if node -e '
+  const s = require(process.argv[1]);
+  const c = s.coordinatorUsageFor(process.argv[2]);
+  const u = c.byModel["claude-opus-5"];
+  if (u.cache_creation_input_tokens !== 4000) throw new Error("dispatch cache write not attributed");
+  if (u.cache_read_input_tokens !== 8000) throw new Error("summary cache read not attributed");
+  const cost = s.costFor("claude-opus-5", u);
+  if (Math.abs(cost - 0.0290) > 1e-6) throw new Error("coordinator cost " + cost);
+  console.log("ok");
+' "$STATS" "$SESSION" | grep -q ok; then
+  echo "PASS: coordinator tokens priced at the orchestrator rate"; pass=$((pass+1))
+else
+  echo "FAIL: coordinator attribution wrong"; fail=$((fail+1))
+fi
+
+CFG_COORD_NONE="$WORKDIR/cfg-coord-none"
+mkdir -p "$CFG_COORD_NONE/projects"
+TARGET_CWD_COORD_NONE="$WORKDIR/coord-none-project"
+SLUG_COORD_NONE="$(correct_slug "$TARGET_CWD_COORD_NONE")"
+PROJECTS_COORD_NONE="$CFG_COORD_NONE/projects"
+mkdir -p "$PROJECTS_COORD_NONE/$SLUG_COORD_NONE"
+SESSION_COORD_NONE="$PROJECTS_COORD_NONE/$SLUG_COORD_NONE/session-coord-none.jsonl"
+write_assistant_line "$SESSION_COORD_NONE" "$TARGET_CWD_COORD_NONE" "claude-opus-5" 100 50 0 0
+write_assistant_line "$SESSION_COORD_NONE" "$TARGET_CWD_COORD_NONE" "claude-sonnet-5" 10 5 0 0
+
+if node -e '
+  const s = require(process.argv[1]);
+  const c = s.coordinatorUsageFor(process.argv[2]);
+  if (c.cycles !== 0) throw new Error("expected 0 cycles, got " + c.cycles);
+  if (Object.keys(c.byModel).length !== 0) throw new Error("expected empty byModel, got " + JSON.stringify(c.byModel));
+  console.log("ok");
+' "$STATS" "$SESSION_COORD_NONE" | grep -q ok; then
+  echo "PASS: a transcript with no dispatches has no coordinator cost"; pass=$((pass+1))
+else
+  echo "FAIL: no-dispatch transcript reported a nonzero coordinator cost"; fail=$((fail+1))
+fi
+
+CFG_COORD_GARBAGE="$WORKDIR/cfg-coord-garbage"
+mkdir -p "$CFG_COORD_GARBAGE/projects"
+TARGET_CWD_COORD_GARBAGE="$WORKDIR/coord-garbage-project"
+SLUG_COORD_GARBAGE="$(correct_slug "$TARGET_CWD_COORD_GARBAGE")"
+PROJECTS_COORD_GARBAGE="$CFG_COORD_GARBAGE/projects"
+mkdir -p "$PROJECTS_COORD_GARBAGE/$SLUG_COORD_GARBAGE"
+SESSION_COORD_GARBAGE="$PROJECTS_COORD_GARBAGE/$SLUG_COORD_GARBAGE/session-coord-garbage.jsonl"
+write_garbage_line "$SESSION_COORD_GARBAGE"
+write_tool_use_line "$SESSION_COORD_GARBAGE" "$TARGET_CWD_COORD_GARBAGE" "claude-opus-5" "tu-coord-garbage-1" "claude-haiku-4-5" 1500
+write_garbage_line "$SESSION_COORD_GARBAGE"
+write_tool_result_line "$SESSION_COORD_GARBAGE" "$TARGET_CWD_COORD_GARBAGE" "tu-coord-garbage-1"
+write_garbage_line "$SESSION_COORD_GARBAGE"
+write_assistant_line "$SESSION_COORD_GARBAGE" "$TARGET_CWD_COORD_GARBAGE" "claude-opus-5" 0 10 0 2500
+write_garbage_line "$SESSION_COORD_GARBAGE"
+
+if node -e '
+  const s = require(process.argv[1]);
+  const c = s.coordinatorUsageFor(process.argv[2]);
+  if (c.cycles !== 1) throw new Error("expected 1 cycle, got " + c.cycles);
+  if (c.unresolved !== 0) throw new Error("expected 0 unresolved, got " + c.unresolved);
+  const u = c.byModel["claude-opus-5"];
+  if (!u) throw new Error("byModel missing claude-opus-5");
+  if (u.cache_creation_input_tokens !== 1500) throw new Error("dispatch cache write not attributed, got " + u.cache_creation_input_tokens);
+  if (u.cache_read_input_tokens !== 2500) throw new Error("summary cache read not attributed, got " + u.cache_read_input_tokens);
+  console.log("ok");
+' "$STATS" "$SESSION_COORD_GARBAGE" | grep -q ok; then
+  echo "PASS: garbage lines do not abort coordinator attribution"; pass=$((pass+1))
+else
+  echo "FAIL: garbage lines broke coordinator attribution"; fail=$((fail+1))
+fi
+
+echo ""
 echo "== Optimus stats: enforcement ledger reporting =="
 
 # Every case below needs a *real* target-project directory (not just a

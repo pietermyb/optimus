@@ -312,6 +312,56 @@ function parseOrchestratorDispatches(filePath) {
   return cycles;
 }
 
+/**
+ * Coordinator overhead: what the ORCHESTRATOR spent to delegate, as
+ * opposed to what the subagent spent doing the work.
+ *
+ * Two quantities, both measured on the orchestrator's own turns:
+ *
+ *   cache_creation_input_tokens on the dispatching turn
+ *     — "cache write on dispatch": the context handed to the subagent.
+ *   cache_read_input_tokens on the first assistant turn after the
+ *     tool_result lands
+ *     — "cache read on summary": re-reading context to absorb the answer.
+ *
+ * Deliberately NOT counted: input/output tokens on those turns. The
+ * orchestrator would have produced most of that text whether or not it
+ * delegated, so charging it to delegation would overstate the overhead —
+ * and this figure is subtracted from the user's savings, so it is biased
+ * toward understating rather than inventing cost.
+ */
+function coordinatorUsageFor(filePath) {
+  const lines = readLines(filePath);
+  const cycles = parseOrchestratorDispatches(filePath);
+  const byModel = {};
+  let unresolved = 0;
+
+  function add(model, field, tokens) {
+    if (!model || !tokens) return;
+    if (!byModel[model]) byModel[model] = emptyUsage();
+    byModel[model][field] += tokens;
+  }
+
+  for (const cycle of cycles) {
+    const dispatchRec = parseRec(lines[cycle.startIndex] || '');
+    const dispatchUsage = (dispatchRec && dispatchRec.message && dispatchRec.message.usage) || {};
+    add(cycle.dispatchModel, 'cache_creation_input_tokens', dispatchUsage.cache_creation_input_tokens || 0);
+
+    if (cycle.endIndex < 0) { unresolved += 1; continue; }
+
+    // The summary turn is the first assistant record AFTER the result.
+    for (let i = cycle.endIndex + 1; i < lines.length; i++) {
+      const rec = parseRec(lines[i]);
+      if (!rec || rec.type !== 'assistant' || !rec.message) continue;
+      const u = rec.message.usage || {};
+      add(rec.message.model, 'cache_read_input_tokens', u.cache_read_input_tokens || 0);
+      break;
+    }
+  }
+
+  return { byModel: byModel, cycles: cycles.length, unresolved: unresolved };
+}
+
 function firstModelIn(filePath) {
   let raw;
   try {
@@ -777,6 +827,7 @@ if (require.main === module) main();
 
 module.exports = {
   parseOrchestratorDispatches,
+  coordinatorUsageFor,
   costFor,
   pricingFor,
 };
