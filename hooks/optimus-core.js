@@ -130,7 +130,7 @@ const ALLOW = { allow: true, reason: null };
  *                                           most once and only when step 5 or 6
  *                                           would otherwise deny.
  * @param {{enabled: boolean, modelConditional?: boolean}} input.config
- * @param {{gatedTools?: Set<string>, expensiveModelRe?: RegExp, shellBypassPatterns?: RegExp[]}=} input.policy
+ * @param {{gatedTools?: Set<string>, gatedToolPatterns?: RegExp[], expensiveModelRe?: RegExp, shellBypassPatterns?: RegExp[]}=} input.policy
  *                                           resolved policy injected by the adapter. decide() does
  *                                           no I/O and cannot read config itself; any missing
  *                                           member falls back to the module default, so a caller
@@ -147,6 +147,7 @@ function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, c
   // default", which is what keeps every pre-existing caller working.
   const pol = policy || {};
   const gatedTools = pol.gatedTools instanceof Set ? pol.gatedTools : WORK_TOOLS;
+  const gatedPatterns = Array.isArray(pol.gatedToolPatterns) ? pol.gatedToolPatterns : [];
   const expensiveRe = pol.expensiveModelRe instanceof RegExp ? pol.expensiveModelRe : EXPENSIVE_MODEL_RE;
   const bypassPatterns = Array.isArray(pol.shellBypassPatterns) ? pol.shellBypassPatterns : DEFAULT_SHELL_BYPASS_PATTERNS;
 
@@ -212,8 +213,11 @@ function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, c
   }
 
   // 5 — work tools denied in the orchestrator while Optimus is active,
-  // unless an allowance unit is granted inline for this turn.
-  if (gatedTools.has(tool)) {
+  // unless an allowance unit is granted inline for this turn. A tool is
+  // gated if it is in the exact set OR matches a gatedToolPatterns glob
+  // (the latter is how a project gates `mcp__*`, which the exact set
+  // cannot enumerate — see getGatedToolPatterns in optimus-config.js).
+  if (gatedTools.has(tool) || gatedPatterns.some((re) => re instanceof RegExp && re.test(tool))) {
     if (tryInlineAllowance()) {
       return { allow: true, reason: null, inlineAllowance: true, tool: tool };
     }

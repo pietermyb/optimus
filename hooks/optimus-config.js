@@ -161,6 +161,49 @@ function getShellBypassPatterns(cwd) {
   return compiled.length > 0 ? compiled : DEFAULT_SHELL_BYPASS_PATTERNS.slice();
 }
 
+/**
+ * Compile a single glob to an anchored RegExp. Only `*` is a wildcard (it
+ * matches any run of characters, `__` and all); every other character is a
+ * literal, so regex metacharacters in a tool name (the `.` and `-` in
+ * `mcp__grafana-multi__...`, say) match themselves rather than acting as
+ * operators. Case-SENSITIVE on purpose: Claude Code and Cursor tool names
+ * are exact-case (`Read`, `mcp__github__list_issues`), and a loose match
+ * would gate more than the author named.
+ */
+function globToRegExp(glob) {
+  const body = String(glob)
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // escape every regex special EXCEPT *
+    .replace(/\*/g, '.*');
+  return new RegExp('^' + body + '$');
+}
+
+/**
+ * Glob patterns that gate a tool by NAME SHAPE rather than exact name.
+ *
+ * This is a SEPARATE key from `gatedTools` on purpose. `gatedTools`, when a
+ * project sets it, REPLACES the default gated set (see getGatedTools) — so
+ * you cannot use it to gate `mcp__*` without also un-gating Read/Edit/etc.
+ * `gatedToolPatterns` instead UNIONS with whatever `gatedTools` resolves
+ * to: the defaults keep gating and the patterns gate on top. The headline
+ * case is `"gatedToolPatterns": ["mcp__*"]`, which gates every MCP tool —
+ * exactly the class of call the exact-name set can never enumerate,
+ * because the MCP tool names differ per user and change over time.
+ *
+ * A fresh array every call, so a caller mutating the result cannot corrupt
+ * policy for the process. A non-array, or an all-unusable list, yields no
+ * patterns (the defaults still apply); one bad entry loses only itself.
+ */
+function getGatedToolPatterns(cwd) {
+  const list = rawConfig(cwd).gatedToolPatterns;
+  if (!Array.isArray(list)) return [];
+  const patterns = [];
+  for (const src of list) {
+    if (typeof src !== 'string' || src.trim() === '') continue;
+    try { patterns.push(globToRegExp(src)); } catch (e) { /* skip this one */ }
+  }
+  return patterns;
+}
+
 function isKillSwitchActive(env) {
   const e = env || process.env;
   const v = e[KILL_SWITCH_ENV];
@@ -356,6 +399,8 @@ module.exports = {
   DEFAULT_EXPENSIVE_TIER_MODEL,
   getExpensiveModelRe,
   getGatedTools,
+  getGatedToolPatterns,
+  globToRegExp,
   getShellBypassPatterns,
   CONFIG_DIRNAME,
   CONFIG_FILENAME,

@@ -66,6 +66,35 @@ directory that has one), written directly by `/optimus on`/`off` — not a
 global flag file, not inferred from free-text prompts. Add `.optimus/` to
 your project's `.gitignore` if you don't want to share activation state.
 
+## Configuring what gets gated
+
+Optimus gates a default set of work tools: Read, Edit, Write, Grep, Glob,
+WebFetch, WebSearch, NotebookEdit, and (on Cursor) Delete. Two optional
+keys in `.optimus/config.json` change that set.
+
+**`gatedTools`** replaces the default set with your own exact tool names.
+Naming it means you own the set completely, so `{ "gatedTools": ["Read",
+"Edit"] }` gates only those two and lets everything else through. Reach for
+it when the defaults are more than you want.
+
+**`gatedToolPatterns`** gates by name shape, and it adds to whatever
+`gatedTools` resolves to instead of replacing it. Only `*` is a wildcard.
+The case it exists for is MCP:
+
+```json
+{ "gatedToolPatterns": ["mcp__*"] }
+```
+
+That gates every MCP tool call in the orchestrator, so MCP work has to be
+delegated like any other work tool, while the default file tools keep being
+gated. MCP tool names differ per setup and change over time, so an exact
+list can never cover them. A glob can.
+
+The two keys are separate on purpose. `gatedTools` replaces, so folding a
+glob into it would gate `mcp__*` only by quietly un-gating Read and Edit.
+`gatedToolPatterns` unions, so the defaults stay and the MCP class is added
+on top.
+
 ## Commands
 
 ### `/optimus [on|off|status]`

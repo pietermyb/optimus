@@ -32,6 +32,7 @@ const {
   getConfig,
   getExpensiveModelRe,
   getGatedTools,
+  getGatedToolPatterns,
   getShellBypassPatterns,
 } = require(path.join(__dirname, 'optimus-config.js'));
 
@@ -142,6 +143,7 @@ function main(raw) {
   const projectDir = cfg.root || payload.cwd;
   const policy = {
     gatedTools: getGatedTools(projectDir),
+    gatedToolPatterns: getGatedToolPatterns(projectDir),
     expensiveModelRe: getExpensiveModelRe(projectDir),
     shellBypassPatterns: getShellBypassPatterns(projectDir),
   };

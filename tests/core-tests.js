@@ -157,6 +157,27 @@ t('injected bypass patterns replace the default', () => {
 t('an empty gatedTools set gates nothing', () => {
   assert.strictEqual(d({ tool: 'Read', policy: { gatedTools: new Set() } }).allow, true);
 });
+t('gatedToolPatterns gate a matching tool the exact set never lists', () => {
+  const policy = { gatedTools: new Set(), gatedToolPatterns: [/^mcp__.*$/] };
+  const denied = d({ tool: 'mcp__grafana-multi__query_loki_logs', policy });
+  assert.strictEqual(denied.allow, false);
+  assert.strictEqual(denied.reason, REASON.WORK_TOOL_IN_ORCHESTRATOR);
+  assert.strictEqual(denied.tool, 'mcp__grafana-multi__query_loki_logs');
+  assert.strictEqual(d({ tool: 'mcp__github__list_issues', policy }).allow, false);
+});
+t('gatedToolPatterns union with gatedTools, they do not replace it', () => {
+  const policy = { gatedTools: new Set(['Read']), gatedToolPatterns: [/^mcp__.*$/] };
+  assert.strictEqual(d({ tool: 'Read', policy }).allow, false); // exact set still gates
+  assert.strictEqual(d({ tool: 'mcp__x__y', policy }).allow, false); // pattern gates too
+  assert.strictEqual(d({ tool: 'Write', policy }).allow, true); // neither: allowed
+});
+t('a non-matching pattern leaves a tool allowed', () => {
+  const policy = { gatedTools: new Set(), gatedToolPatterns: [/^mcp__.*$/] };
+  assert.strictEqual(d({ tool: 'Write', policy }).allow, true);
+});
+t('gatedToolPatterns of a wrong type is ignored, no throw', () => {
+  assert.strictEqual(d({ tool: 'mcp__x__y', policy: { gatedTools: new Set(), gatedToolPatterns: 'nope' } }).allow, true);
+});
 t('no policy argument behaves exactly as the built-in defaults', () => {
   assert.deepStrictEqual(d({ tool: 'Read' }), d({ tool: 'Read', policy: {} }));
   assert.strictEqual(d({ tool: AGENT_DISPATCH, toolInput: { model: 'claude-opus-5' } }).allow, false);
