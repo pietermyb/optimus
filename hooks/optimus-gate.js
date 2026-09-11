@@ -148,21 +148,27 @@ function main(raw) {
     shellBypassPatterns: getShellBypassPatterns(projectDir),
   };
 
-  // Claude Code gives us a stable session key but no generation/turn key.
-  // Without a trustworthy boundary signal, an inline-allowance counter
-  // cannot honestly reset per turn, so strict deny behaviour is preserved.
+  // Claude Code's PreToolUse payload carries no generation_id, but it does
+  // carry prompt_id: a per-turn key that is identical across every tool call
+  // within one user turn (including the whole tool-use loop that one prompt
+  // drives) and changes on the next turn. That is exactly the boundary an
+  // inline-allowance counter needs to reset honestly, so it never resets
+  // mid-turn and cannot over-grant. session_id stays the stable per-
+  // conversation key; prompt_id is the per-turn key. When prompt_id is
+  // absent (unusual payloads), fall through to strict deny. That is the
+  // same fail-closed posture as before.
   const hasTurnKey =
     typeof payload.session_id === 'string' &&
     payload.session_id.trim() !== '' &&
-    typeof payload.generation_id === 'string' &&
-    payload.generation_id.trim() !== '';
+    typeof payload.prompt_id === 'string' &&
+    payload.prompt_id.trim() !== '';
 
   const allowanceConsumer = hasTurnKey
     ? () =>
         consumeAllowance({
           cwd: payload.cwd,
           conversationId: payload.session_id,
-          generationId: payload.generation_id,
+          generationId: payload.prompt_id,
           inlineAllowancePerTurn: cfg.inlineAllowancePerTurn,
         })
     : undefined;

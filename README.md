@@ -95,6 +95,26 @@ glob into it would gate `mcp__*` only by quietly un-gating Read and Edit.
 `gatedToolPatterns` unions, so the defaults stay and the MCP class is added
 on top.
 
+## Inline allowance per turn
+
+Gating every work tool outright can be stricter than you want. Reading one
+file to answer a quick question does not need a subagent, and dispatching
+one costs more than just doing the read. `inlineAllowancePerTurn` (default
+2) lets a small number of gated calls run inline on the orchestrator each
+turn before the gate takes over for the rest of that turn.
+
+```json
+{ "inlineAllowancePerTurn": 1 }
+```
+
+Set it to 0 to gate everything with no exemption. The budget resets at each
+turn boundary. On Cursor that boundary is the generation id; on Claude Code
+it is the prompt id, which stays the same across every tool call in one turn
+and changes on the next. Both hosts read the same key and behave the same
+way. If a payload carries no turn key at all, the gate falls back to denying
+every gated call, so the allowance can never leak past a turn it cannot
+measure.
+
 ## Commands
 
 ### `/optimus [on|off|status]`

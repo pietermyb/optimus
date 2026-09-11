@@ -126,6 +126,29 @@ check_payload "default policy: Delete DENIED (from the resolver default)" deny "
 check_payload "custom policy: Delete ALLOWED (override not unioned with Delete)" allow "$custom_delete_payload"
 
 echo ""
+echo "-- inline allowance keyed on Claude Code's prompt_id (turn boundary) --"
+# Default config => inlineAllowancePerTurn 2, Read gated. With a prompt_id
+# present the first two Reads in a turn ride the allowance, the third is
+# denied, a new prompt_id resets the budget, and a Read with no prompt_id
+# keeps the old strict-deny behaviour (fail closed). A fresh project keeps
+# the on-disk allowance counter isolated from the tests above.
+ALLOW="$WORKDIR/project-allowance"
+mkdir -p "$ALLOW"
+CLAUDE_PROJECT_DIR="$ALLOW" node "$CLI" on >/dev/null
+
+allowance_read() { # $1 = prompt_id, $2 = tool_use_id
+  printf '{"session_id":"alw-sess","prompt_id":"%s","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"work.txt"},"tool_use_id":"%s"}' "$1" "$ALLOW" "$2"
+}
+
+check_payload "allowance: Read #1 in a turn ALLOWED"                allow "$(allowance_read turn-A tu_alw_1)"
+check_payload "allowance: Read #2 in a turn ALLOWED"                allow "$(allowance_read turn-A tu_alw_2)"
+check_payload "allowance: Read #3 in a turn DENIED (budget spent)"  deny  "$(allowance_read turn-A tu_alw_3)"
+check_payload "allowance: Read in a NEW turn ALLOWED (reset on prompt_id)" allow "$(allowance_read turn-B tu_alw_4)"
+
+allowance_noprompt="$(printf '{"session_id":"alw-sess","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"work.txt"},"tool_use_id":"tu_alw_5"}' "$ALLOW")"
+check_payload "allowance: Read with no prompt_id DENIED (fail closed)" deny "$allowance_noprompt"
+
+echo ""
 echo "-- no-policy-keys regression: behavior stays byte-identical --"
 MINIMAL="$WORKDIR/project-minimal"
 mkdir -p "$MINIMAL/.optimus"
