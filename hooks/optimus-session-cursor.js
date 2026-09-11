@@ -24,6 +24,7 @@ const path = require('path');
 const { isKillSwitchActive, getConfig } = require(
   path.join(__dirname, 'optimus-config.js')
 );
+const { clearStale } = require(path.join(__dirname, 'optimus-sidecar.js'));
 
 const RULE_PATH = path.join(__dirname, '..', 'cursor', 'optimus.mdc');
 
@@ -56,6 +57,14 @@ function main(raw) {
     return emit({});
   }
   if (!cfg.enabled) return emit({});
+
+  // sessionStart is the safest proactive cleanup point for abandoned markers.
+  // This must never affect the hook protocol output.
+  try {
+    clearStale(payload.cwd);
+  } catch (e) {
+    // best effort only; keep emitting additional_context
+  }
 
   let text;
   try {
