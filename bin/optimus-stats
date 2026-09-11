@@ -7,7 +7,7 @@
  * Reads Claude Code's own transcript files directly — there is no
  * documented API for this, it's the same mechanism `caveman-stats.js`
  * uses for its own (single-transcript) reporting. Two things this
- * script does that a naive version would get wrong (see README):
+ * script does that a naive version would get wrong (see how_it_works.md):
  *
  *  1. Subagent usage lives in SEPARATE transcript files
  *     (`<session-dir>/subagents/agent-<id>.jsonl`), not in the parent
@@ -34,7 +34,7 @@ const { STATE_DIRNAME, LEDGER_FILENAME } = require(
   path.join(__dirname, '..', 'hooks', 'optimus-ledger.js')
 );
 
-// Pricing snapshot used during Optimus's research (see README "Known
+// Pricing snapshot used during Optimus's research (see limitations.md "Known
 // limitations" for sourcing). ESTIMATES — verify current numbers at
 // https://anthropic.com/pricing before trusting these for anything real.
 const PRICING_SNAPSHOT_DATE = '2026-06-24';
@@ -84,7 +84,7 @@ function costFor(model, u) {
 // character replaced by a dash (e.g. /Users/x.y@z/a_b -> -Users-x-y-z-a-b).
 // Case is preserved. Undocumented, Claude-Code-internal, not a stable
 // public API — if a future version changes this layout, this lookup needs
-// updating (see README). NOT verified: whether Claude Code collapses a run
+// updating (see limitations.md). NOT verified: whether Claude Code collapses a run
 // of consecutive non-alphanumeric characters into a single dash, or emits
 // one dash per character as this does — no observed real project path has
 // had two separator characters in a row. Because this is a guess at an

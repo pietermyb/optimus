@@ -157,7 +157,7 @@ parent's `Agent` tool-result rollup (which the file's header comment notes only 
 subagent's *last* turn). It prints a pricing table with a snapshot date
 (`PRICING_SNAPSHOT_DATE = '2026-06-24'`) and computes an **estimated** saving versus a hypothetical
 all-opus run. Both scripts are exposed on
-`PATH` via the plugin's `bin/` directory rather than through `${CLAUDE_PLUGIN_ROOT}` — the README
+`PATH` via the plugin's `bin/` directory rather than through `${CLAUDE_PLUGIN_ROOT}` — how_it_works.md
 documents (with a specific historical incident) that `CLAUDE_PLUGIN_ROOT` is not set inside a slash
 command's own `!`-prefixed bash execution, only inside `hooks/hooks.json` command strings.
 
@@ -165,7 +165,7 @@ command's own `!`-prefixed bash execution, only inside `hooks/hooks.json` comman
 
 - `.claude-plugin/plugin.json`: `name: "optimus"`, `version: "0.1.0"`, description, author
   (Pieter Myburgh), `homepage`, `license: "GPL-3.0-or-later"`, keywords. **Deliberately carries no
-  `"hooks"` key** — the README documents that Claude Code's plugin hook loader only reliably picks
+  `"hooks"` key** — how_it_works.md documents that Claude Code's plugin hook loader only reliably picks
   up hooks from an inline `"hooks"` object in `plugin.json` *or* the literal conventional path
   `hooks/hooks.json`, and warns explicitly against renaming/relocating that file or pointing a
   `"hooks"` key elsewhere, citing a specific incident where a differently-named hook file silently
@@ -295,7 +295,7 @@ This is worth flagging because Optimus's README states the opposite is true for 
 two places that are worth quoting exactly rather than summarizing, since this spec must not
 misrepresent a decision the maintainer already made deliberately:
 
-From the enforcement table (`README.md:200`):
+From the enforcement table in README.md:
 
 > `"Only block when the orchestrator is specifically Opus" (model-conditional enforcement) | — |
 > Not implemented, deliberately. There is no reliable field carrying the calling model in a
@@ -305,7 +305,7 @@ From the enforcement table (`README.md:200`):
 > detecting "is this Opus" — which also means it protects you even if you're driving the
 > orchestrator session on a different expensive model.`
 
-From "Known limitations" (`README.md:347-355`):
+From [limitations.md](../limitations.md):
 
 > `No reliable way to detect the orchestrator's own model from inside a hook. PreToolUse payloads
 > don't carry a model field, and neither does the hook process's own environment. The one indirect
@@ -502,7 +502,7 @@ scenario actually happened and update Section 6 accordingly before writing any a
 
 **The problem.** A bundled Cursor plugin's `hooks/hooks.json` needs its `command` string to
 resolve the plugin's own installed location, the same way Claude Code's `hooks/hooks.json` uses
-`${CLAUDE_PLUGIN_ROOT}` (confirmed working, per this repo's own `hooks/hooks.json` and the README's
+`${CLAUDE_PLUGIN_ROOT}` (confirmed working, per this repo's own `hooks/hooks.json` and how_it_works.md's
 discussion of where that variable is and isn't available). For Cursor:
 
 - `${PLUGIN_ROOT}` appears in the Agent-Plugins `mcp.json` example (`"cwd": "${PLUGIN_ROOT}"`).
@@ -788,7 +788,7 @@ The replacement design has two parts:
 `additional_context`: "context to add to conversation's initial system context." This fires once,
 at conversation creation — it cannot re-inject per turn the way `optimus-reinforce.js` does today,
 but it covers the same role a Claude Code `SessionStart` hook would (Optimus doesn't currently use
-one, relying entirely on the per-turn `UserPromptSubmit` mechanism instead, per the README's own
+one, relying entirely on the per-turn `UserPromptSubmit` mechanism instead, per how_it_works.md's
 "Continuous reinforcement, not just a one-shot nudge" section — so this is genuinely new coverage
 for Cursor, not a straight port of an existing Claude Code hook).
 

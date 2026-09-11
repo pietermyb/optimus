@@ -4,7 +4,7 @@
  * OS-specific PATH setup for `optimus-cli`.
  *
  * Claude Code adds every loaded plugin's own `bin/` directory to `PATH` for
- * the duration of the session (see README, "The bin/ + PATH mechanism").
+ * the duration of the session (see how_it_works.md, "The bin/ + PATH mechanism").
  * Cursor does no such thing: a user who installs Optimus into a Cursor
  * project and runs `optimus-cli install cursor` still has no `optimus-cli`
  * on `PATH` afterwards, and either has to type `./bin/optimus-cli` or dig up

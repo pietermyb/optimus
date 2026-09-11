@@ -136,7 +136,7 @@ function main(raw) {
 
   // Claude Code payloads carry no model field, and the one indirect
   // route (polling the transcript) races this hook's own invocation —
-  // see README "Known limitations". Always null here.
+  // see limitations.md. Always null here.
   const decision = decide({
     tool: tool,
     toolInput: toolInput,
