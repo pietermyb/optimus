@@ -179,6 +179,29 @@ check_payload "allowance policy: Read #1 allowed" allow "$allow_read_payload"
 check_payload "allowance policy: Read #2 still allowed" allow "$allow_read_payload"
 
 echo ""
+echo "-- gatedToolPatterns end to end: a real deny through the Cursor adapter --"
+# A follow-up to #3 hardened the glob matcher and the config cache
+# underneath this key, but neither of those changes should be able to
+# silently drop the WIRING itself. gatedTools: [] means a deny here can
+# only have come from the pattern, and inlineAllowancePerTurn: 0 means it
+# cannot be masked by the per-turn inline allowance either.
+PATTERN_PROJECT="$WORKDIR/project-pattern"
+mkdir -p "$PATTERN_PROJECT/.optimus"
+cat >"$PATTERN_PROJECT/.optimus/config.json" <<'JSON'
+{
+  "enabled": true,
+  "updatedAt": "2026-09-11T00:00:00.000Z",
+  "inlineAllowancePerTurn": 0,
+  "gatedTools": [],
+  "gatedToolPatterns": ["mcp__*"]
+}
+JSON
+mcp_gated_payload="$(printf '{"hook_event_name":"preToolUse","conversation_id":"pattern-conv-main","session_id":"pattern-conv-main","generation_id":"pattern-gen-1","model":"claude-opus-5","cursor_version":"3.19.13","workspace_roots":["%s"],"transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","tool_name":"mcp__github__list_issues","tool_input":{},"tool_use_id":"toolu_bdrk_pattern_mcp","agent_message":"Listing issues"}' "$PATTERN_PROJECT" "$PATTERN_PROJECT")"
+mcp_unmatched_payload="$(printf '{"hook_event_name":"preToolUse","conversation_id":"pattern-conv-main","session_id":"pattern-conv-main","generation_id":"pattern-gen-1","model":"claude-opus-5","cursor_version":"3.19.13","workspace_roots":["%s"],"transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","tool_name":"SomeOtherTool","tool_input":{},"tool_use_id":"toolu_bdrk_pattern_other","agent_message":"Doing other things"}' "$PATTERN_PROJECT" "$PATTERN_PROJECT")"
+check_payload "gatedToolPatterns: mcp__* reaches an actual deny through the Cursor adapter" deny "$mcp_gated_payload"
+check_payload "gatedToolPatterns: a non-matching tool is still allowed (gatedTools is empty here)" allow "$mcp_unmatched_payload"
+
+echo ""
 echo "-- with a dispatch outstanding: the subagent's conversation is exempt --"
 render subagent-start.json | node "$SUBHOOK" >/dev/null
 check "outstanding: subagent Read ALLOWED (exempt)" allow subagent-read.json

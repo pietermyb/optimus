@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Optimus</title>
+  <defs>
+    <radialGradient id="badgeBg" cx="50%" cy="42%" r="65%">
+      <stop offset="0%" stop-color="#16213A"/>
+      <stop offset="70%" stop-color="#0A1122"/>
+      <stop offset="100%" stop-color="#05080F"/>
+    </radialGradient>
+    <radialGradient id="eyeGlow" cx="32%" cy="32%" r="80%">
+      <stop offset="0%" stop-color="#FFE6CE"/>
+      <stop offset="40%" stop-color="#F0925F"/>
+      <stop offset="100%" stop-color="#BE5A38"/>
+    </radialGradient>
+    <linearGradient id="badgeRing" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F2F4F7"/>
+      <stop offset="100%" stop-color="#9BA7B6"/>
+    </linearGradient>
+    <clipPath id="clipBrow">
+      <polygon points="200,196 232,196 280,196 312,196 360,238 354,266 256,274 158,266 152,238"/>
+    </clipPath>
+    <clipPath id="clipFace">
+      <polygon points="156,308 356,308 352,340 322,388 256,418 190,388 160,340"/>
+    </clipPath>
+  </defs>
+
+  <!-- badge background -->
+  <circle cx="256" cy="256" r="248" fill="url(#badgeBg)"/>
+  <circle cx="256" cy="256" r="246" fill="none" stroke="#31456B" stroke-width="2" opacity="0.55"/>
+  <circle cx="256" cy="256" r="238" fill="none" stroke="#3A4E73" stroke-width="1" opacity="0.3"/>
+
+  <!-- side fins -->
+  <polygon points="200,196 176,206 140,140 168,132" fill="#1D3E70" stroke="#12294F" stroke-width="3" stroke-linejoin="round"/>
+  <polygon points="312,196 336,206 372,140 344,132" fill="#1D3E70" stroke="#12294F" stroke-width="3" stroke-linejoin="round"/>
+  <polygon points="168,132 140,140 152,158" fill="#3868A8"/>
+  <polygon points="344,132 372,140 360,158" fill="#3868A8"/>
+
+  <!-- central crest -->
+  <polygon points="256,104 276,150 280,196 232,196 236,150" fill="#1D3E70" stroke="#C43B3B" stroke-width="4" stroke-linejoin="round"/>
+  <polygon points="256,104 236,150 256,150" fill="#3868A8"/>
+
+  <!-- helmet brow -->
+  <g clip-path="url(#clipBrow)">
+    <rect x="130" y="170" width="256" height="120" fill="#1D3E70"/>
+    <polygon points="130,170 250,170 210,290 130,290" fill="#3868A8"/>
+    <polygon points="316,170 386,170 386,290 340,290" fill="#12294F"/>
+  </g>
+  <polygon points="200,196 232,196 280,196 312,196 360,238 354,266 256,274 158,266 152,238" fill="none" stroke="#12294F" stroke-width="2"/>
+
+  <!-- red pinstripe under brow -->
+  <path d="M152,264 L360,264" stroke="#C43B3B" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- visor band -->
+  <polygon points="152,266 360,266 366,308 146,308" fill="#0E1930"/>
+
+  <!-- eyes -->
+  <polygon points="186,300 182,286 192,272 224,276 230,290 220,302" fill="url(#eyeGlow)" stroke="#0E1930" stroke-width="1.5" stroke-linejoin="round"/>
+  <polygon points="326,300 330,286 320,272 288,276 282,290 292,302" fill="url(#eyeGlow)" stroke="#0E1930" stroke-width="1.5" stroke-linejoin="round"/>
+
+  <!-- forehead O badge -->
+  <circle cx="256" cy="190" r="21" fill="url(#badgeRing)"/>
+  <circle cx="256" cy="190" r="12" fill="#D97757"/>
+
+  <!-- faceplate -->
+  <g clip-path="url(#clipFace)">
+    <rect x="150" y="308" width="212" height="112" fill="#D9DEE5"/>
+    <polygon points="150,308 236,308 206,420 150,420" fill="#F1F4F8"/>
+    <polygon points="300,308 362,308 362,420 312,420" fill="#9BA7B6"/>
+  </g>
+  <polygon points="156,308 356,308 352,340 322,388 256,418 190,388 160,340" fill="none" stroke="#8A96A5" stroke-width="2"/>
+
+  <!-- mouth-guard slats -->
+  <g fill="#1B2740">
+    <rect x="213" y="332" width="18" height="50" rx="5"/>
+    <rect x="247" y="332" width="18" height="50" rx="5"/>
+    <rect x="281" y="332" width="18" height="50" rx="5"/>
+  </g>
+
+  <!-- chin accent -->
+  <polygon points="232,396 280,396 270,408 242,408" fill="#C43B3B"/>
+</svg>

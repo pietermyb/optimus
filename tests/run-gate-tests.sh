@@ -125,6 +125,26 @@ custom_delete_payload="$(printf '{"session_id":"test-session","transcript_path":
 check_payload "default policy: Delete DENIED (from the resolver default)" deny "$default_delete_payload"
 check_payload "custom policy: Delete ALLOWED (override not unioned with Delete)" allow "$custom_delete_payload"
 
+# gatedToolPatterns end to end: a follow-up to #3 hardened the glob
+# matcher and the config cache underneath this key, but neither of those
+# changes should be able to silently drop the WIRING itself. This project
+# gates nothing by exact name (gatedTools: []) so a deny here can only
+# have come from the pattern.
+PATTERN="$WORKDIR/project-pattern"
+mkdir -p "$PATTERN/.optimus"
+cat >"$PATTERN/.optimus/config.json" <<'JSON'
+{
+  "enabled": true,
+  "updatedAt": "2026-09-11T00:00:00.000Z",
+  "gatedTools": [],
+  "gatedToolPatterns": ["mcp__*"]
+}
+JSON
+mcp_gated_payload="$(printf '{"session_id":"test-session","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"mcp__github__list_issues","tool_input":{},"tool_use_id":"toolu_fixture_pattern_mcp"}' "$PATTERN")"
+mcp_unmatched_payload="$(printf '{"session_id":"test-session","transcript_path":"/tmp/does-not-exist.jsonl","cwd":"%s","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"SomeOtherTool","tool_input":{},"tool_use_id":"toolu_fixture_pattern_other"}' "$PATTERN")"
+check_payload "gatedToolPatterns: mcp__* reaches an actual deny through the Claude Code adapter" deny "$mcp_gated_payload"
+check_payload "gatedToolPatterns: a non-matching tool is still allowed (gatedTools is empty here)" allow "$mcp_unmatched_payload"
+
 echo ""
 echo "-- inline allowance keyed on Claude Code's prompt_id (turn boundary) --"
 # Default config => inlineAllowancePerTurn 2, Read gated. With a prompt_id

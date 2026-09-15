@@ -162,19 +162,92 @@ function getShellBypassPatterns(cwd) {
 }
 
 /**
- * Compile a single glob to an anchored RegExp. Only `*` is a wildcard (it
- * matches any run of characters, `__` and all); every other character is a
- * literal, so regex metacharacters in a tool name (the `.` and `-` in
+ * Linear-time glob matcher. Only `*` is a wildcard (it matches any run of
+ * characters, including empty); every other character is a literal, so
+ * regex metacharacters in a tool name (the `.` and `-` in
  * `mcp__grafana-multi__...`, say) match themselves rather than acting as
  * operators. Case-SENSITIVE on purpose: Claude Code and Cursor tool names
  * are exact-case (`Read`, `mcp__github__list_issues`), and a loose match
- * would gate more than the author named.
+ * would gate more than the author named. The match is anchored at both
+ * ends: a prefix or suffix match alone is not a match.
+ *
+ * This used to build a RegExp where every `*` became an UNANCHORED `.*`.
+ * That makes the regex engine's own backtracking search the pattern's
+ * exponentially many ways to split the subject across the stars whenever
+ * the subject doesn't actually match —
+ * `'a' + '*a'.repeat(n) + 'X'` against a non-matching subject roughly
+ * 8-10x's the runtime per additional star (measured: 5 stars ~19ms, 6
+ * ~179ms, 7 ~1.4s, 8 already >3s). No realistic glob looks like that (the
+ * shipped example is `mcp__*`, one star), so this was never reachable
+ * through this plugin's own config surface — but it is still worth
+ * removing the exponential case outright rather than trusting every
+ * caller of `gatedToolPatterns` to keep writing tame globs forever.
+ *
+ * This is the classic greedy two-pointer wildcard-match algorithm (the
+ * common iterative solution to "wildcard matching", e.g. LeetCode 44):
+ * walk both strings left to right; on a `*`, remember where it is and
+ * provisionally let it match zero characters; on a later mismatch,
+ * backtrack to the MOST RECENT `*` and let it absorb one more character
+ * instead of re-deriving the split from scratch. Every character of the
+ * subject is visited at most once between backtracks, and a backtrack can
+ * only advance `starSubjectIdx` forward (never past `subject.length`), so
+ * the whole match is bounded by O(pattern.length * subject.length) time
+ * with O(1) extra space -- there is no pattern/subject shape that makes it
+ * blow up, unlike a backtracking regex engine exploring `.*` splits.
  */
-function globToRegExp(glob) {
-  const body = String(glob)
-    .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // escape every regex special EXCEPT *
-    .replace(/\*/g, '.*');
-  return new RegExp('^' + body + '$');
+function matchGlob(glob, subject) {
+  const pattern = String(glob);
+  const text = String(subject);
+  const pLen = pattern.length;
+  const tLen = text.length;
+
+  let pi = 0;
+  let ti = 0;
+  // Index of the most recent unresolved `*`, and the subject position it
+  // was first tried against. -1 means "no `*` seen yet to backtrack to".
+  let starIdx = -1;
+  let starTextIdx = 0;
+
+  while (ti < tLen) {
+    if (pi < pLen && pattern[pi] === '*') {
+      starIdx = pi;
+      starTextIdx = ti;
+      pi++;
+    } else if (pi < pLen && pattern[pi] === text[ti]) {
+      pi++;
+      ti++;
+    } else if (starIdx !== -1) {
+      // The literal run since the last `*` didn't fit here -- let that
+      // `*` eat one more character and retry the literal run from there.
+      starTextIdx++;
+      ti = starTextIdx;
+      pi = starIdx + 1;
+    } else {
+      return false;
+    }
+  }
+
+  // Whatever is left in the pattern must be all `*` (each matches empty).
+  while (pi < pLen && pattern[pi] === '*') pi++;
+  return pi === pLen;
+}
+
+/**
+ * Compile a single glob into an object exposing `.test(subject)`, the
+ * same shape `hooks/optimus-core.js`'s decide() already expects (it used
+ * to be a real RegExp there; see the duck-typed check in decide() for
+ * why it no longer has to be).
+ *
+ * No cache here: `matchGlob` above has no real "compile" step to save --
+ * it walks the pattern string directly, with none of the
+ * `new RegExp(...)` construction/escaping cost the old implementation
+ * paid. A cache keyed on the glob source would therefore only save one
+ * tiny closure allocation per repeated glob string, which isn't worth the
+ * bookkeeping.
+ */
+function compileGlobPattern(glob) {
+  const src = String(glob);
+  return { test: (subject) => matchGlob(src, subject) };
 }
 
 /**
@@ -199,7 +272,7 @@ function getGatedToolPatterns(cwd) {
   const patterns = [];
   for (const src of list) {
     if (typeof src !== 'string' || src.trim() === '') continue;
-    try { patterns.push(globToRegExp(src)); } catch (e) { /* skip this one */ }
+    try { patterns.push(compileGlobPattern(src)); } catch (e) { /* skip this one */ }
   }
   return patterns;
 }
@@ -221,19 +294,102 @@ function validatedInlineAllowance(rawValue) {
 }
 
 /**
+ * Process-lifetime cache of parsed `.optimus/config.json` contents, keyed
+ * by the config file's absolute path and validated against its mtime and
+ * size on every lookup. This is what actually stops the "recompiled from
+ * disk on every call" cost the linked issue calls out: within a SINGLE
+ * hook invocation, `getConfig()` (via `rawConfig()`) is currently called
+ * once each from `getGatedTools`, `getShellBypassPatterns`,
+ * `getExpensiveModelRe` and `getGatedToolPatterns` -- four independent
+ * `findProjectRoot` walks plus four `lstatSync`+`readFileSync`+
+ * `JSON.parse` passes over the exact same file, every single tool call.
+ * Caching here collapses the read+parse to once per process; the
+ * `findProjectRoot` walk itself is untouched (it is cheap `lstatSync`
+ * calls with no file content to parse, and caching directory-shape
+ * lookups introduces its own staleness questions this file does not need
+ * to take on).
+ *
+ * Be honest about what this buys, because a hook is a brand-new process
+ * per tool call: NOTHING carries over BETWEEN invocations -- the module
+ * is re-required from scratch and this Map starts empty every time. The
+ * entire benefit is bounded to the current process, i.e. exactly the 4x
+ * redundant read+parse above. That is real (it is 4 syscalls-plus-parse
+ * down to 1, on every gated tool call), just smaller than "caching"
+ * usually implies across a program's lifetime.
+ *
+ * Staleness and cross-project leakage, addressed directly rather than by
+ * hoping the cache expires in time:
+ *   - Keyed by the resolved absolute file path, not by cwd or project
+ *     root name, so two different project directories can never collide
+ *     on the same cache entry.
+ *   - Validated by (mtimeMs, size) on every read: a change either one
+ *     invalidates the entry before it is ever returned. This covers any
+ *     writer this module does not control (a user hand-editing the file,
+ *     `/optimus on|off` running as a separate process, etc.).
+ *   - `setConfig()` below ALSO deletes its own target's entry the moment
+ *     it writes, rather than relying on mtime resolution alone -- some
+ *     filesystems have coarser mtime granularity than "two writes from
+ *     the same process, moments apart" needs to be provably safe.
+ */
+const configFileCache = new Map();
+
+function invalidateConfigFileCache(filePath) {
+  configFileCache.delete(path.resolve(filePath));
+}
+
+/**
+ * Recursively Object.freeze a JSON-parsed value. JSON.parse only ever
+ * produces plain objects, arrays, and primitives, so those are the only
+ * shapes this needs to walk. Freezing just the top level would not be
+ * enough -- `getConfig(cwd).raw.gatedTools.push(...)` would still succeed
+ * against an un-frozen nested array -- so every object/array reachable
+ * from `value` gets frozen before any caller can see it.
+ */
+function deepFreeze(value) {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const key of Object.keys(value)) deepFreeze(value[key]);
+  return value;
+}
+
+/**
  * Read a small JSON file, refusing symlinks and oversized files.
  * Returns null on any error (missing, not JSON, too big, symlink, etc.)
- * rather than throwing — callers treat null as "no usable config here".
+ * rather than throwing -- callers treat null as "no usable config here".
+ *
+ * Cached (see configFileCache above): the lstat this already has to do
+ * for the symlink/size checks doubles as the cache-validity check, so a
+ * cache hit costs exactly the syscall this function would have made
+ * anyway, and a stale entry is structurally impossible to return.
+ *
+ * The parsed value is deep-frozen before it is cached or returned, so the
+ * SAME object handed out on a cache hit can never be mutated by a caller
+ * into corrupting policy for the rest of the process -- matching what
+ * every sibling resolver (getGatedTools, getShellBypassPatterns, ...)
+ * already guarantees by returning a fresh copy on every call. Before this
+ * cache existed, each call got its own fresh JSON.parse output, so this
+ * was never a concern; caching the same object across calls is what makes
+ * it one.
  */
 function safeReadJsonFile(filePath) {
+  const resolved = path.resolve(filePath);
   try {
-    const lst = fs.lstatSync(filePath);
+    const lst = fs.lstatSync(resolved);
     if (lst.isSymbolicLink()) return null;
     if (!lst.isFile()) return null;
     if (lst.size > MAX_CONFIG_BYTES) return null;
-    const raw = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(raw);
+
+    const cached = configFileCache.get(resolved);
+    if (cached && cached.mtimeMs === lst.mtimeMs && cached.size === lst.size) {
+      return cached.value;
+    }
+
+    const raw = fs.readFileSync(resolved, 'utf8');
+    const parsed = deepFreeze(JSON.parse(raw));
+    configFileCache.set(resolved, { mtimeMs: lst.mtimeMs, size: lst.size, value: parsed });
+    return parsed;
   } catch (e) {
+    configFileCache.delete(resolved);
     return null;
   }
 }
@@ -382,6 +538,9 @@ function setConfig(cwd, enabled) {
     ) + '\n';
 
   writeFileAtomicRefusingSymlink(target, payload);
+  // See configFileCache's comment above: don't rely on mtime
+  // resolution alone to notice our own write.
+  invalidateConfigFileCache(target);
 
   return { root, enabled: !!enabled, configPath: target };
 }
@@ -400,7 +559,8 @@ module.exports = {
   getExpensiveModelRe,
   getGatedTools,
   getGatedToolPatterns,
-  globToRegExp,
+  matchGlob,
+  compileGlobPattern,
   getShellBypassPatterns,
   CONFIG_DIRNAME,
   CONFIG_FILENAME,

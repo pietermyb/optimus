@@ -130,7 +130,7 @@ const ALLOW = { allow: true, reason: null };
  *                                           most once and only when step 5 or 6
  *                                           would otherwise deny.
  * @param {{enabled: boolean, modelConditional?: boolean}} input.config
- * @param {{gatedTools?: Set<string>, gatedToolPatterns?: RegExp[], expensiveModelRe?: RegExp, shellBypassPatterns?: RegExp[]}=} input.policy
+ * @param {{gatedTools?: Set<string>, gatedToolPatterns?: Array<{test: function(string): boolean}>, expensiveModelRe?: RegExp, shellBypassPatterns?: RegExp[]}=} input.policy
  *                                           resolved policy injected by the adapter. decide() does
  *                                           no I/O and cannot read config itself; any missing
  *                                           member falls back to the module default, so a caller
@@ -217,7 +217,13 @@ function decide({ tool, toolInput, isSubagent, sessionModel, consumeAllowance, c
   // gated if it is in the exact set OR matches a gatedToolPatterns glob
   // (the latter is how a project gates `mcp__*`, which the exact set
   // cannot enumerate — see getGatedToolPatterns in optimus-config.js).
-  if (gatedTools.has(tool) || gatedPatterns.some((re) => re instanceof RegExp && re.test(tool))) {
+  // Duck-typed on `.test()` rather than `instanceof RegExp`: since
+  // optimus-config.js moved off building a RegExp per glob (to avoid its
+  // catastrophic-backtracking case) in favor of a linear matcher object
+  // with the same `.test(subject)` shape, this still has to accept a
+  // real RegExp too (tests, and any caller that hand-builds policy,
+  // legitimately pass one).
+  if (gatedTools.has(tool) || gatedPatterns.some((re) => re && typeof re.test === 'function' && re.test(tool))) {
     if (tryInlineAllowance()) {
       return { allow: true, reason: null, inlineAllowance: true, tool: tool };
     }
