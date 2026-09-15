@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="988" height="1216" viewBox="0 0 988 1216" xml:space="preserve" role="img" aria-label="Agent map panel showing an Opus orchestrator session, CI/CD pipeline overview, dispatching a sequence of implement and review subagent tasks with elapsed time and token counts.">
+<title>Agent map</title>
+<rect x="0" y="0" width="988" height="1216" rx="12" ry="12" fill="#22242c"/>
+<text x="16" y="38" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#f5f5f5">Agent map</text>
+<text x="960" y="38" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="20" font-weight="400" fill="#6e7681">×</text>
+<line x1="500" y1="70" x2="500" y2="1216" stroke="#3a3d46" stroke-width="1"/>
+<line x1="476" y1="150.5" x2="500" y2="150.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="114.5" x2="524" y2="114.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="187.5" x2="524" y2="187.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="260.5" x2="524" y2="260.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="333.5" x2="524" y2="333.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="406.5" x2="524" y2="406.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="479.5" x2="524" y2="479.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="552.5" x2="524" y2="552.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="625.5" x2="524" y2="625.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="698.5" x2="524" y2="698.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="771.5" x2="524" y2="771.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="844.5" x2="524" y2="844.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="917.5" x2="524" y2="917.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="990.5" x2="524" y2="990.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="1063.5" x2="524" y2="1063.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="1136.5" x2="524" y2="1136.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="500" y1="1209.5" x2="524" y2="1209.5" stroke="#3a3d46" stroke-width="1"/>
+<line x1="524" y1="70" x2="954" y2="70" stroke="#3a3d46" stroke-width="1" opacity="0.6"/>
+<rect x="16" y="120" width="460" height="61" rx="4" ry="4" fill="#30333d" stroke="#3d404a" stroke-width="1"/>
+<circle cx="34" cy="150.5" r="3" fill="#8a8d96"/>
+<text x="52" y="145" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#f5f5f5">CI/CD pipeline overview</text>
+<text x="52" y="166" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">Opus 5 (1M) · 410.4k tokens in context</text>
+<circle cx="542" cy="114.5" r="3" fill="#8a8d96"/>
+<text x="560" y="109" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Implement Task 1: gitignore update</text>
+<text x="560" y="130" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">53s · 35.9k tokens</text>
+<circle cx="542" cy="187.5" r="3" fill="#8a8d96"/>
+<text x="560" y="182" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Review Task 1 (spec + quality)</text>
+<text x="560" y="203" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">48s · 53.8k tokens</text>
+<circle cx="542" cy="260.5" r="3" fill="#8a8d96"/>
+<text x="560" y="255" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Implement Task 2: scaffold uv project</text>
+<text x="560" y="276" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 0s · 38.9k tokens</text>
+<circle cx="542" cy="333.5" r="3" fill="#8a8d96"/>
+<text x="560" y="328" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Review Task 2 (spec + quality)</text>
+<text x="560" y="349" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 25s · 77.1k tokens</text>
+<circle cx="542" cy="406.5" r="3" fill="#8a8d96"/>
+<text x="560" y="401" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Implement Task 3: config module</text>
+<text x="560" y="422" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">7m 13s · 57.8k tokens</text>
+<circle cx="542" cy="479.5" r="3" fill="#8a8d96"/>
+<text x="560" y="474" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Review Task 3 (spec + quality)</text>
+<text x="560" y="495" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">4m 13s · 82.7k tokens</text>
+<circle cx="542" cy="552.5" r="3" fill="#8a8d96"/>
+<text x="560" y="547" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Re-review Task 3 fix round 1</text>
+<text x="560" y="568" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">26s · 40.4k tokens</text>
+<circle cx="542" cy="625.5" r="3" fill="#8a8d96"/>
+<text x="560" y="620" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Implement Task 4: deterministic JSON wri…</text>
+<text x="560" y="641" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 5s · 41.0k tokens</text>
+<circle cx="542" cy="698.5" r="3" fill="#8a8d96"/>
+<text x="560" y="693" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Review Task 4 (spec + quality)</text>
+<text x="560" y="714" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 11s · 59.0k tokens</text>
+<circle cx="542" cy="771.5" r="3" fill="#8a8d96"/>
+<text x="560" y="766" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Implement Task 5: hashing and finding id</text>
+<text x="560" y="787" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 6s · 42.3k tokens</text>
+<circle cx="542" cy="844.5" r="3" fill="#8a8d96"/>
+<text x="560" y="839" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Review Task 5 (spec + quality)</text>
+<text x="560" y="860" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 13s · 60.0k tokens</text>
+<circle cx="542" cy="917.5" r="3" fill="#8a8d96"/>
+<text x="560" y="912" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Implement Task 6: SYS finding model</text>
+<text x="560" y="933" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 13s · 44.5k tokens</text>
+<circle cx="542" cy="990.5" r="3" fill="#8a8d96"/>
+<text x="560" y="985" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Review Task 6 (spec + quality)</text>
+<text x="560" y="1006" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">1m 38s · 65.1k tokens</text>
+<circle cx="542" cy="1063.5" r="3" fill="#8a8d96"/>
+<text x="560" y="1058" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Implement Task 7: exit codes</text>
+<text x="560" y="1079" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">56s · 41.0k tokens</text>
+<circle cx="542" cy="1136.5" r="3" fill="#8a8d96"/>
+<text x="560" y="1131" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="18" font-weight="500" fill="#f5f5f5">Review Task 7 (spec + quality)</text>
+<text x="560" y="1152" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" fill="#9a9da6">46s · 56.0k tokens</text>
+<clipPath id="row16clip"><rect x="524" y="1203.5" width="430" height="12"/></clipPath>
+<g clip-path="url(#row16clip)">
+<circle cx="542" cy="1209.5" r="3" fill="#8a8d96"/>
+</g>
+<rect x="970" y="84" width="4" height="1116" rx="2" ry="2" fill="#2b2e37"/>
+<rect x="970" y="620" width="4" height="310" rx="2" ry="2" fill="#5a5d66"/>
+</svg>

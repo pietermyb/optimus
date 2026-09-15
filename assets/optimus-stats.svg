@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1230" height="1026" viewBox="0 0 1230 1026" xml:space="preserve" role="img" aria-label="Terminal screenshot of the /optimus:optimus-stats command output, showing Optimus token usage, cost, and estimated savings for the acme-platform project.">
+<title>Optimus stats command output</title>
+<rect x="0" y="0" width="1230" height="1026" rx="12" ry="12" fill="#262a33"/>
+<rect x="40" y="28" width="1150" height="54" rx="10" ry="10" fill="none" stroke="#4a4f5a" stroke-width="1.5"/>
+<text x="64" y="61" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#c9ccd3">/optimus:optimus-stats</text>
+<circle cx="54" cy="138" r="3" fill="#6e7681"/>
+<line x1="54" y1="114" x2="54" y2="974" stroke="#6e7681" stroke-width="1"/>
+<g font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" font-size="17">
+<text x="84" y="150"><tspan font-weight="700" fill="#f5f5f5">Optimus stats: acme-platform</tspan></text>
+<text x="84" y="186"><tspan fill="#d4d4d4">The prices behind these costs come from a price list dated 2026-06-24; check them at</tspan><tspan fill="#4a9eff"> https://anthropic.com/pricing</tspan><tspan fill="#d4d4d4">. Per million tokens:</tspan></text>
+<text x="108" y="222" fill="#6e7681">•</text><text x="128" y="222"><tspan font-weight="700" fill="#f5f5f5">Opus 5:</tspan><tspan fill="#d4d4d4"> $5 input, $25 output.</tspan></text>
+<text x="108" y="248" fill="#6e7681">•</text><text x="128" y="248"><tspan font-weight="700" fill="#f5f5f5">Sonnet 5:</tspan><tspan fill="#d4d4d4"> $2 input, $10 output.</tspan></text>
+<text x="108" y="274" fill="#6e7681">•</text><text x="128" y="274"><tspan font-weight="700" fill="#f5f5f5">Haiku 4.5:</tspan><tspan fill="#d4d4d4"> $1 input, $5 output.</tspan></text>
+<text x="84" y="310"><tspan fill="#d4d4d4">Cache pricing is assumed, not verified: writes at about 1.25× the input price, reads at about 0.1×.</tspan></text>
+<text x="84" y="346"><tspan font-weight="700" fill="#f5f5f5">Orchestrator (this session, Opus 5): $59.48</tspan></text>
+<text x="108" y="382" fill="#6e7681">•</text><text x="128" y="382"><tspan fill="#d4d4d4">376 turns</tspan></text>
+<text x="108" y="408" fill="#6e7681">•</text><text x="128" y="408"><tspan fill="#d4d4d4">436.6K output tokens</tspan></text>
+<text x="108" y="434" fill="#6e7681">•</text><text x="128" y="434"><tspan fill="#d4d4d4">1.28M tokens written to cache</tspan></text>
+<text x="108" y="460" fill="#6e7681">•</text><text x="128" y="460"><tspan fill="#d4d4d4">81.1M tokens read from cache</tspan></text>
+<text x="84" y="496"><tspan font-weight="700" fill="#f5f5f5">Delegated work: $131.65</tspan></text>
+<text x="108" y="532" fill="#6e7681">•</text><text x="128" y="532"><tspan font-weight="700" fill="#f5f5f5">Sonnet 5, $126.13:</tspan><tspan fill="#d4d4d4"> 2,093 turns, 1.35M output tokens, 385.3M cache-read tokens.</tspan></text>
+<text x="108" y="558" fill="#6e7681">•</text><text x="128" y="558"><tspan font-weight="700" fill="#f5f5f5">Haiku 4.5, $5.52:</tspan><tspan fill="#d4d4d4"> 744 turns, 106.7K output tokens, 27.1M cache-read tokens.</tspan></text>
+<text x="84" y="594"><tspan font-weight="700" fill="#f5f5f5">Dispatches:</tspan><tspan fill="#d4d4d4"> 51 subagents, all general-purpose.</tspan></text>
+<text x="108" y="630" fill="#6e7681">•</text><text x="128" y="630"><tspan font-weight="700" fill="#f5f5f5">By model:</tspan><tspan fill="#d4d4d4"> 29 ran on Sonnet and 22 on Haiku. Each ran on the model it was requested with, and none ran on Opus.</tspan></text>
+<text x="108" y="656" fill="#6e7681">•</text><text x="128" y="656"><tspan font-weight="700" fill="#f5f5f5">Enforcement:</tspan><tspan fill="#d4d4d4"> no dispatches or tool calls were denied. Two shell calls ran inline, and there were no shell nudges.</tspan></text>
+<text x="84" y="692"><tspan font-weight="700" fill="#f5f5f5">Estimated saving compared with running the delegated work on Opus</tspan></text>
+<text x="108" y="728" fill="#6e7681">•</text><text x="128" y="728"><tspan font-weight="700" fill="#f5f5f5">Actual delegated cost:</tspan><tspan fill="#d4d4d4"> $131.65.</tspan></text>
+<text x="108" y="754" fill="#6e7681">•</text><text x="128" y="754"><tspan font-weight="700" fill="#f5f5f5">Same tokens priced at Opus rates:</tspan><tspan fill="#d4d4d4"> $342.92.</tspan></text>
+<text x="108" y="780" fill="#6e7681">•</text><text x="128" y="780"><tspan font-weight="700" fill="#f5f5f5">Gross saving:</tspan><tspan fill="#d4d4d4"> $211.27.</tspan></text>
+<text x="108" y="806" fill="#6e7681">•</text><text x="128" y="806"><tspan font-weight="700" fill="#f5f5f5">Orchestration overhead:</tspan><tspan fill="#d4d4d4"> $6.62 for 51 dispatch cycles.</tspan></text>
+<text x="108" y="832" fill="#6e7681">•</text><text x="128" y="832"><tspan font-weight="700" fill="#f5f5f5">Net saving:</tspan><tspan fill="#d4d4d4"> about $204.65.</tspan></text>
+<text x="84" y="868"><tspan fill="#d4d4d4">This is an estimate, not a measured result:</tspan></text>
+<text x="108" y="904" fill="#6e7681">•</text><text x="128" y="904"><tspan font-weight="700" fill="#f5f5f5">Same token volume:</tspan><tspan fill="#d4d4d4"> it assumes Opus would have used the same number of tokens for the same work. Opus might finish some</tspan></text>
+<text x="128" y="930"><tspan fill="#d4d4d4">tasks in fewer turns, and a smaller model sometimes needs more turns.</tspan></text>
+<text x="108" y="956" fill="#6e7681">•</text><text x="128" y="956"><tspan font-weight="700" fill="#f5f5f5">Overhead attribution:</tspan><tspan fill="#d4d4d4"> the net figure assumes dispatch and summary tokens are correctly identified from the transcript. It may</tspan></text>
+<text x="128" y="982"><tspan fill="#d4d4d4">miss orchestration overhead spent mid-conversation that isn't next to a dispatch.</tspan></text>
+</g>
+</svg>

@@ -1,4 +1,8 @@
-# Optimus
+<p align="center">
+  <img src="assets/optimus-avatar.svg" alt="Optimus logo" width="160">
+</p>
+
+<h1 align="center">Optimus</h1>
 
 A Claude Code plugin that keeps an expensive orchestrator model doing
 orchestration, and pushes the actual work — reading files, searching code,
@@ -19,6 +23,12 @@ while it's active for a project, the main session is orchestrator-only. Work
 tools are blocked. Every subagent dispatch must name a model. Subagents
 themselves are completely exempt — they're where the real work happens now,
 on `haiku` or `sonnet` instead of the model running the show.
+
+<p align="center">
+  <img src="assets/optimus-agent-map.svg" alt="Claude Code Agent map showing one Opus orchestrator session fanning out to several Implement and Review Task subagents" width="480">
+</p>
+
+*Claude Code's Agent map: one Opus orchestrator session dispatching Implement and Review Task subagents.*
 
 ## Install
 
@@ -115,6 +125,12 @@ for this), correctly walking subagent transcripts separately from the
 parent's. Pricing is a dated snapshot printed in the output itself, so a
 stale rate is visible rather than silently wrong. Full mechanics, caveats,
 and an example run: [how_it_works.md](how_it_works.md#optimus-stats-mechanics).
+
+<p align="center">
+  <img src="assets/optimus-stats.svg" alt="Example /optimus-stats output showing orchestrator cost, delegated Sonnet/Haiku cost, 51 subagent dispatches, and estimated savings versus running everything on Opus" width="720">
+</p>
+
+*Example `/optimus-stats` output: orchestrator vs. delegated cost, 51 dispatches, and an estimated $204.65 saved versus running it all on Opus.*
 
 ## The kill switch
 
