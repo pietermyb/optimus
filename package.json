@@ -1,6 +1,6 @@
 {
   "name": "@pietermyb/optimus",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Keeps an expensive orchestrator model doing orchestration, and pushes real work onto cheaper delegated subagents via hard-enforced hooks.",
   "author": {
     "name": "Pieter Myburgh",
