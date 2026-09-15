@@ -233,44 +233,21 @@ function matchGlob(glob, subject) {
 }
 
 /**
- * Process-lifetime cache of compiled glob matchers, keyed by the glob's
- * own source string. Pure and content-addressed on purpose: the compiled
- * result for a given source string is the same no matter which project or
- * config file it came from, so this cache cannot go stale (a source
- * string always compiles to the same matcher) and cannot leak project
- * state (there is no project identity in the key at all).
- *
- * Honesty check on how much this actually buys: `matchGlob` above has no
- * real "compile" step left to save -- it walks the pattern string
- * directly, with none of the `new RegExp(...)` construction/escaping cost
- * the old implementation paid. So this cache mostly saves one tiny
- * closure allocation per repeated glob string, not meaningful CPU. It is
- * kept anyway because (a) it is what the ticket asks for, (b) it protects
- * against a future call site that compiles the same glob repeatedly in a
- * hot loop, and (c) capping its size costs nothing. It is bounded rather
- * than unbounded so a pathologically large/changing set of distinct glob
- * strings across a long process lifetime can't grow this without limit;
- * hitting the cap just clears and starts over, which is always correct
- * (a cache miss just recompiles), never wrong.
- */
-const globMatcherCache = new Map();
-const GLOB_MATCHER_CACHE_MAX = 512;
-
-/**
  * Compile a single glob into an object exposing `.test(subject)`, the
  * same shape `hooks/optimus-core.js`'s decide() already expects (it used
  * to be a real RegExp there; see the duck-typed check in decide() for
  * why it no longer has to be).
+ *
+ * No cache here: `matchGlob` above has no real "compile" step to save --
+ * it walks the pattern string directly, with none of the
+ * `new RegExp(...)` construction/escaping cost the old implementation
+ * paid. A cache keyed on the glob source would therefore only save one
+ * tiny closure allocation per repeated glob string, which isn't worth the
+ * bookkeeping.
  */
 function compileGlobPattern(glob) {
   const src = String(glob);
-  const cached = globMatcherCache.get(src);
-  if (cached) return cached;
-
-  const compiled = { test: (subject) => matchGlob(src, subject) };
-  if (globMatcherCache.size >= GLOB_MATCHER_CACHE_MAX) globMatcherCache.clear();
-  globMatcherCache.set(src, compiled);
-  return compiled;
+  return { test: (subject) => matchGlob(src, subject) };
 }
 
 /**
@@ -361,6 +338,21 @@ function invalidateConfigFileCache(filePath) {
 }
 
 /**
+ * Recursively Object.freeze a JSON-parsed value. JSON.parse only ever
+ * produces plain objects, arrays, and primitives, so those are the only
+ * shapes this needs to walk. Freezing just the top level would not be
+ * enough -- `getConfig(cwd).raw.gatedTools.push(...)` would still succeed
+ * against an un-frozen nested array -- so every object/array reachable
+ * from `value` gets frozen before any caller can see it.
+ */
+function deepFreeze(value) {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const key of Object.keys(value)) deepFreeze(value[key]);
+  return value;
+}
+
+/**
  * Read a small JSON file, refusing symlinks and oversized files.
  * Returns null on any error (missing, not JSON, too big, symlink, etc.)
  * rather than throwing -- callers treat null as "no usable config here".
@@ -369,6 +361,15 @@ function invalidateConfigFileCache(filePath) {
  * for the symlink/size checks doubles as the cache-validity check, so a
  * cache hit costs exactly the syscall this function would have made
  * anyway, and a stale entry is structurally impossible to return.
+ *
+ * The parsed value is deep-frozen before it is cached or returned, so the
+ * SAME object handed out on a cache hit can never be mutated by a caller
+ * into corrupting policy for the rest of the process -- matching what
+ * every sibling resolver (getGatedTools, getShellBypassPatterns, ...)
+ * already guarantees by returning a fresh copy on every call. Before this
+ * cache existed, each call got its own fresh JSON.parse output, so this
+ * was never a concern; caching the same object across calls is what makes
+ * it one.
  */
 function safeReadJsonFile(filePath) {
   const resolved = path.resolve(filePath);
@@ -384,7 +385,7 @@ function safeReadJsonFile(filePath) {
     }
 
     const raw = fs.readFileSync(resolved, 'utf8');
-    const parsed = JSON.parse(raw);
+    const parsed = deepFreeze(JSON.parse(raw));
     configFileCache.set(resolved, { mtimeMs: lst.mtimeMs, size: lst.size, value: parsed });
     return parsed;
   } catch (e) {

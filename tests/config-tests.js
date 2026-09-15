@@ -171,7 +171,7 @@ t('a non-string entry is skipped, the valid ones survive', () => {
 t('a non-array value yields no patterns', () => {
   assert.deepStrictEqual(cfg.getGatedToolPatterns(project(Object.assign({}, BASE, { gatedToolPatterns: 'mcp__*' }))), []);
 });
-t('compileGlobPattern escapes regex metacharacters other than *', () => {
+t('compileGlobPattern treats regex metacharacters as literals', () => {
   const re = cfg.compileGlobPattern('a+b(*)');
   assert.strictEqual(re.test('a+b(zzz)'), true);
   assert.strictEqual(re.test('aab(z)'), false);
@@ -294,6 +294,99 @@ t('a directory with no .optimus still yields defaults, never throws', () => {
   assert.strictEqual(cfg.getGatedTools(bare).has('Delete'), true);
   assert.deepStrictEqual(cfg.getGatedToolPatterns(bare), []);
   assert.strictEqual(cfg.getShellBypassPatterns(bare).length > 0, true);
+});
+
+// --- config file cache ---------------------------------------------------
+// Covers hooks/optimus-config.js's process-lifetime configFileCache: it
+// must never hand back a stale read, never let a caller corrupt the
+// cached object, and never let two projects collide on it.
+
+t('setConfig then getConfig in the same process sees the new value immediately', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-cache-'));
+  cfg.setConfig(dir, true);
+  const file = path.join(dir, '.optimus', 'config.json');
+
+  // Pin the mtime to a fixed, whole-millisecond Date of our own choosing
+  // both times below. Re-using a stat's own (possibly sub-millisecond)
+  // mtimeMs through `new Date(...)` would round-trip lossily -- fs
+  // timestamps only take whole milliseconds -- so a value read back
+  // could silently fail to match the one just written. Starting from a
+  // value we picked ourselves sidesteps that.
+  const fixedMtime = new Date('2020-01-01T00:00:00.000Z');
+  fs.utimesSync(file, fixedMtime, fixedMtime);
+  cfg.getConfig(dir); // primes the cache at the fixed mtime
+
+  // A second setConfig() with the SAME `enabled` value rewrites the file
+  // with only `updatedAt` changed -- an ISO-8601 timestamp is always the
+  // same length, so the file comes out byte-identical in size. Pinning
+  // the mtime back to the same fixed value removes every incidental
+  // (mtime, size) signal a cache-validity check could notice on its own
+  // -- what's left is setConfig()'s own explicit
+  // invalidateConfigFileCache() call, which is exactly what this test is
+  // proving matters (see the comment on configFileCache in
+  // hooks/optimus-config.js).
+  cfg.setConfig(dir, true);
+  fs.utimesSync(file, fixedMtime, fixedMtime);
+  const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+
+  assert.strictEqual(cfg.getConfig(dir).raw.updatedAt, onDisk.updatedAt);
+});
+
+t('an external write with a different size is picked up', () => {
+  const dir = project(BASE);
+  assert.strictEqual(cfg.getConfig(dir).enabled, true); // primes the cache
+
+  const file = path.join(dir, '.optimus', 'config.json');
+  fs.writeFileSync(file, JSON.stringify(Object.assign({}, BASE, { enabled: false, note: 'x'.repeat(40) })));
+
+  assert.strictEqual(cfg.getConfig(dir).enabled, false);
+});
+
+t('an external same-size rewrite with a changed mtime is picked up', () => {
+  const dir = project(Object.assign({}, BASE, { inlineAllowancePerTurn: 2 }));
+  assert.strictEqual(cfg.getConfig(dir).inlineAllowancePerTurn, 2); // primes the cache
+
+  const file = path.join(dir, '.optimus', 'config.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const after = before.replace('"inlineAllowancePerTurn":2', '"inlineAllowancePerTurn":5');
+  assert.strictEqual(before.length, after.length, 'test setup bug: rewrite must be byte-identical in size');
+  fs.writeFileSync(file, after);
+  // Same size as before, so only an mtime change can invalidate the
+  // cache -- force one explicitly rather than hoping the write above
+  // landed in a new mtime tick on its own.
+  const st = fs.statSync(file);
+  fs.utimesSync(file, new Date(st.atimeMs), new Date(st.mtimeMs + 1000));
+
+  assert.strictEqual(cfg.getConfig(dir).inlineAllowancePerTurn, 5);
+});
+
+t('mutating the object returned by getConfig().raw does not affect the next getConfig call', () => {
+  const dir = project(Object.assign({}, BASE, { gatedTools: ['Read'] }));
+  const first = cfg.getConfig(dir);
+  assert.throws(() => { first.raw.gatedTools.push('Mutated'); }, TypeError);
+  assert.throws(() => { first.raw.enabled = false; }, TypeError);
+
+  const second = cfg.getConfig(dir);
+  assert.strictEqual(second.enabled, true);
+  assert.deepStrictEqual(second.raw.gatedTools, ['Read']);
+});
+
+t('two different project dirs do not share cache entries', () => {
+  const dirA = project(Object.assign({}, BASE, { enabled: true }));
+  const dirB = project(Object.assign({}, BASE, { enabled: false }));
+  assert.strictEqual(cfg.getConfig(dirA).enabled, true);
+  assert.strictEqual(cfg.getConfig(dirB).enabled, false);
+  assert.strictEqual(cfg.getConfig(dirA).enabled, true); // dirB's read didn't clobber dirA's
+});
+
+t('a missing config file is not negatively cached', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-nocfg-'));
+  assert.strictEqual(cfg.getConfig(dir).enabled, false); // no .optimus/config.json yet
+
+  fs.mkdirSync(path.join(dir, '.optimus'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.optimus', 'config.json'), JSON.stringify(BASE));
+
+  assert.strictEqual(cfg.getConfig(dir).enabled, true);
 });
 
 console.log('');
