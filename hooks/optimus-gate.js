@@ -37,7 +37,7 @@ const {
 } = require(path.join(__dirname, 'optimus-config.js'));
 
 const { consumeAllowance } = require(path.join(__dirname, 'optimus-allowance.js'));
-const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
+const { recordEvent, recordAgentEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
 const {
   decide,
   ledgerEventFor,
@@ -198,6 +198,27 @@ function main(raw) {
       payload.cwd,
       Object.assign({ session_id: payload.session_id, tool_use_id: payload.tool_use_id }, event)
     );
+
+    // Agent-map stream: one row per ALLOWED dispatch, alongside (never
+    // instead of) the enforcement ledger — same schema as the Cursor gate
+    // writes, so one stream spans both hosts. `description` comes from the
+    // raw tool_input; `prompt` is never recorded. Denials stay solely in
+    // events.jsonl.
+    if (event.ev === 'dispatch_allowed') {
+      const agentEvent = {
+        ev: 'agent_dispatch',
+        session_id: payload.session_id,
+        tool_use_id: payload.tool_use_id,
+        agent_type: event.agent_type,
+        model: event.model,
+      };
+      const description =
+        typeof toolInput.description === 'string' ? toolInput.description : '';
+      if (description.trim() !== '') {
+        agentEvent.title = description.length > 120 ? description.slice(0, 120) : description;
+      }
+      recordAgentEvent(payload.cwd, agentEvent);
+    }
   }
 
   if (decision.allow) return allow();

@@ -25,6 +25,7 @@ const { isKillSwitchActive, getConfig } = require(
   path.join(__dirname, 'optimus-config.js')
 );
 const { clearStale } = require(path.join(__dirname, 'optimus-sidecar.js'));
+const { recordAgentEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
 
 const RULE_PATH = path.join(__dirname, '..', 'cursor', 'optimus.mdc');
 
@@ -62,6 +63,24 @@ function main(raw) {
   // This must never affect the hook protocol output.
   try {
     clearStale(payload.cwd);
+  } catch (e) {
+    // best effort only; keep emitting additional_context
+  }
+
+  // Agent-map stream: the orchestrator root row. The sessionStart field
+  // set is unverified (Stage-0 fallback accepted): write whatever id
+  // exists, include model only if the payload carries one, and skip the
+  // row entirely when there is no id at all — the extension then
+  // synthesizes the root from the shared session_id of dispatch rows.
+  try {
+    const rootId = payload.conversation_id || payload.session_id;
+    if (rootId) {
+      recordAgentEvent(payload.cwd, {
+        ev: 'session_started',
+        session_id: rootId,
+        model: payload.model || payload.model_id,
+      });
+    }
   } catch (e) {
     // best effort only; keep emitting additional_context
   }

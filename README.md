@@ -206,8 +206,11 @@ Optimus/
 
 A project that activates Optimus also gets its own runtime state under
 `.optimus/` (`config.json`, plus `state/events.jsonl` — the ledger
-`/optimus-stats` reads back — once any enforcement event has fired).
-Neither is part of this plugin's own source tree.
+`/optimus-stats` reads back — once any enforcement event has fired, and
+`state/agents.jsonl` — the agent-lifecycle stream the future
+Optimus-Visualiser extension reads; silent unless something runs, opt out
+with `"agentMap": false`). Neither is part of this plugin's own source
+tree.
 
 ## Known limitations
 

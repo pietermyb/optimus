@@ -55,12 +55,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { findProjectRoot, getConfig, isKillSwitchActive } = require(
+const { findProjectRoot, getConfig, isKillSwitchActive, getAgentMap } = require(
   path.join(__dirname, 'optimus-config.js')
 );
 
 const STATE_DIRNAME = 'state';
 const LEDGER_FILENAME = 'events.jsonl';
+/** Agent lifecycle stream (Agent map) — separate file, same writer mechanics. */
+const AGENT_LEDGER_FILENAME = 'agents.jsonl';
 const ROTATED_SUFFIX = '.1';
 /** Rotate once the ledger reaches this many bytes (before the next append). */
 const ROTATE_MAX_BYTES = 1024 * 1024; // 1 MB
@@ -86,6 +88,54 @@ function rotateIfOverCap(file) {
 }
 
 /**
+ * Build one record line and append it to `filename` under the project's
+ * state dir. Callers own the guard chain (kill switch, project root,
+ * enabled, and — for the agent stream — the agentMap key); this owns
+ * only the record shape, rotation, and the atomic append. Never called
+ * without the guards already passed.
+ */
+function appendRecord(root, filename, event) {
+  const record = {
+    v: 1,
+    ts: new Date().toISOString(),
+    ev: capString(event && event.ev),
+    session_id: capString(event && event.session_id),
+  };
+  if (event && typeof event === 'object') {
+    for (const key of Object.keys(event)) {
+      if (key === 'ev' || key === 'session_id') continue;
+      record[key] = capString(event[key]);
+    }
+  }
+
+  const line = JSON.stringify(record) + '\n';
+  const dir = path.join(root, '.optimus', STATE_DIRNAME);
+  const file = path.join(dir, filename);
+
+  fs.mkdirSync(dir, { recursive: true });
+
+  try {
+    rotateIfOverCap(file);
+  } catch (e) {
+    // no ledger yet, or rotation failed for any reason — fall through
+    // and append to (or create) the file as-is.
+  }
+
+  fs.appendFileSync(file, line, { mode: 0o600 });
+}
+
+/** Shared failure posture for both writers: never throw, never touch stdout. */
+function swallowFailure(e) {
+  try {
+    process.stderr.write(
+      'optimus-ledger: failed to record event: ' + (e && e.message) + '\n'
+    );
+  } catch (e2) {
+    // even stderr can fail (EPIPE, etc.) — nothing more to do.
+  }
+}
+
+/**
  * Append one enforcement event to the current project's ledger. See the
  * header comment for the full contract. Never throws, never writes to
  * stdout.
@@ -100,50 +150,43 @@ function recordEvent(cwd, event) {
     const cfg = getConfig(cwd);
     if (!cfg.enabled) return;
 
-    const record = {
-      v: 1,
-      ts: new Date().toISOString(),
-      ev: capString(event && event.ev),
-      session_id: capString(event && event.session_id),
-    };
-    if (event && typeof event === 'object') {
-      for (const key of Object.keys(event)) {
-        if (key === 'ev' || key === 'session_id') continue;
-        record[key] = capString(event[key]);
-      }
-    }
-
-    const line = JSON.stringify(record) + '\n';
-    const dir = path.join(root, '.optimus', STATE_DIRNAME);
-    const file = path.join(dir, LEDGER_FILENAME);
-
-    fs.mkdirSync(dir, { recursive: true });
-
-    try {
-      rotateIfOverCap(file);
-    } catch (e) {
-      // no ledger yet, or rotation failed for any reason — fall through
-      // and append to (or create) the file as-is.
-    }
-
-    fs.appendFileSync(file, line, { mode: 0o600 });
+    appendRecord(root, LEDGER_FILENAME, event);
   } catch (e) {
-    // Absolute requirement: never throw, never touch stdout. A stderr
-    // note is fine — it plays no part in the hook's JSON protocol.
-    try {
-      process.stderr.write(
-        'optimus-ledger: failed to record event: ' + (e && e.message) + '\n'
-      );
-    } catch (e2) {
-      // even stderr can fail (EPIPE, etc.) — nothing more to do.
-    }
+    swallowFailure(e);
+  }
+}
+
+/**
+ * Append one agent lifecycle event to the Agent-map stream
+ * (`agents.jsonl`). Same guards, shape, rotation, and silence as
+ * `recordEvent`, plus the `agentMap` config key (absent/non-boolean =
+ * on; only an explicit boolean false opts out). Observational only —
+ * never throws, never writes to stdout, never reads the file back.
+ */
+function recordAgentEvent(cwd, event) {
+  try {
+    if (isKillSwitchActive()) return;
+
+    const root = findProjectRoot(cwd);
+    if (!root) return;
+
+    const cfg = getConfig(cwd);
+    if (!cfg.enabled) return;
+
+    if (!getAgentMap(cwd)) return;
+
+    appendRecord(root, AGENT_LEDGER_FILENAME, event);
+  } catch (e) {
+    swallowFailure(e);
   }
 }
 
 module.exports = {
   recordEvent,
+  recordAgentEvent,
   ROTATE_MAX_BYTES,
   MAX_FIELD_LEN,
   STATE_DIRNAME,
   LEDGER_FILENAME,
+  AGENT_LEDGER_FILENAME,
 };

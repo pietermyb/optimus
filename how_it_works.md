@@ -363,3 +363,38 @@ A few properties of this file are load-bearing, not incidental:
   on the hot path between the gate deciding and emitting its verdict, so it
   can never throw or write to stdout — a missing/unwritable state directory
   degrades to "no ledger for this event," never to a wedged session.
+
+### The agent map stream (`agents.jsonl`)
+
+Alongside the enforcement ledger, the same writers append agent *lifecycle*
+rows — observational, not enforcement — to
+`<project root>/.optimus/state/agents.jsonl`. This is the data source for
+the future **Optimus-Visualiser** Cursor extension (design contract:
+`docs/spec/optimus-visualiser-spec.md`), which folds the stream into an
+"Agent map" panel: the orchestrator as root, one card per subagent with
+title, status and duration. It deliberately lives in a **separate file**
+from `events.jsonl` so the two never share a rotation budget or blur each
+other's meaning; `/optimus-stats` does not read it and gains no output
+from it.
+
+Four events, written by the hooks that already fire on these transitions:
+
+| `ev` | Writer | When |
+|---|---|---|
+| `session_started` | `optimus-session-cursor.js` | Cursor `sessionStart` (orchestrator root; `model` only if the payload carries one) |
+| `agent_dispatch` | both gate adapters | only on `dispatch_allowed` — denied dispatches never become agents and stay solely in the enforcement ledger. `title` is `tool_input.description`, truncated to 120 chars; `prompt` is **never** recorded |
+| `agent_started` | `optimus-subagent-cursor.js` | `subagentStart`, after the sidecar marker is written |
+| `agent_finished` | `optimus-subagent-cursor.js` | `subagentStop`, after the marker is cleared — including orphan stops with no preceding start (observed: validation failures) |
+
+Every line carries `session_id` = the **orchestrator's** conversation id
+(fallback: the subagent's own id on a parentless stop) plus
+`agent_conversation_id`/`subagent_id` join keys — the extension joins on
+ids, never on line adjacency.
+
+Writer contract, inherited wholesale from `recordEvent`: single
+`appendFileSync`, 1 MB → one `.1` generation, 200-char string cap, `v`/`ts`
+stamped by the writer, never throws, never writes to stdout, silent no-op
+under the kill switch or a disabled project. One extra guard: the
+`"agentMap": false` key in `.optimus/config.json` silences **only** this
+stream (absent/non-boolean = on; enforcement is unaffected either way, and
+`optimus-cli on/off` preserves an explicit opt-out).

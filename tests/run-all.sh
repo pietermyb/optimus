@@ -17,6 +17,7 @@ SUITES=(
   run-allowance-tests.sh
   run-gate-tests.sh
   run-ledger-tests.sh
+  run-agentlog-tests.sh
   run-stats-tests.sh
   run-probe-report-tests.sh
   run-gate-cursor-tests.sh

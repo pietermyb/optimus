@@ -6,7 +6,7 @@
   "hook_event_name": "PreToolUse",
   "tool_name": "Agent",
   "tool_input": {
-    "description": "Investigate OPTIMUS_SENTINEL_9f3a1b findings",
+    "description": "Investigate findings",
     "prompt": "Look into OPTIMUS_SENTINEL_9f3a1b and report back",
     "subagent_type": "general-purpose",
     "run_in_background": false

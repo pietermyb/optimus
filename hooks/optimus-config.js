@@ -277,6 +277,17 @@ function getGatedToolPatterns(cwd) {
   return patterns;
 }
 
+/**
+ * The Agent-map stream switch (`.optimus/config.json` `"agentMap"`).
+ * Absent or non-boolean ⇒ on: a visualization feature that silently
+ * records nothing is worse than one that is easy to turn off. Only an
+ * explicit boolean `false` disables the `agents.jsonl` writes; the
+ * enforcement ledger is unaffected either way.
+ */
+function getAgentMap(cwd) {
+  return rawConfig(cwd).agentMap !== false;
+}
+
 function isKillSwitchActive(env) {
   const e = env || process.env;
   const v = e[KILL_SWITCH_ENV];
@@ -532,10 +543,18 @@ function setConfig(cwd, enabled) {
     existing && typeof existing === 'object' && isValidInlineAllowance(existing.inlineAllowancePerTurn)
       ? existing.inlineAllowancePerTurn
       : DEFAULT_INLINE_ALLOWANCE_PER_TURN;
+  // Preserve an explicit agentMap opt-out across on/off rewrites; a
+  // non-boolean value is not a decision and is dropped (getAgentMap
+  // treats absent as on, so dropping changes nothing).
+  const agentMap =
+    existing && typeof existing === 'object' && typeof existing.agentMap === 'boolean'
+      ? existing.agentMap
+      : undefined;
 
   // Every policy key is written explicitly, at the value that reproduces
   // today's hardcoded behaviour exactly. Every value except
-  // inlineAllowancePerTurn (preserved above, per Phase 1) is derived from
+  // inlineAllowancePerTurn (preserved above, per Phase 1) and agentMap
+  // (preserved above when explicitly set) is derived from
   // the SAME exported constants the resolvers themselves fall back to
   // (DEFAULT_GATED_TOOLS, EXPENSIVE_MODEL_RE, DEFAULT_SHELL_BYPASS_PATTERNS,
   // DEFAULT_EXPENSIVE_TIER_MODEL) rather than re-spelled literally here, so
@@ -544,15 +563,18 @@ function setConfig(cwd, enabled) {
   // {enabled, updatedAt} -- see tests/run-install-tests.sh.
   const payload =
     JSON.stringify(
-      {
-        enabled: !!enabled,
-        inlineAllowancePerTurn: inlineAllowancePerTurn,
-        updatedAt: new Date().toISOString(),
-        expensiveModelPattern: EXPENSIVE_MODEL_RE.source,
-        gatedTools: Array.from(DEFAULT_GATED_TOOLS),
-        shellBypassPatterns: DEFAULT_SHELL_BYPASS_PATTERNS.map((re) => re.source),
-        expensiveTierModel: DEFAULT_EXPENSIVE_TIER_MODEL,
-      },
+      Object.assign(
+        {
+          enabled: !!enabled,
+          inlineAllowancePerTurn: inlineAllowancePerTurn,
+          updatedAt: new Date().toISOString(),
+          expensiveModelPattern: EXPENSIVE_MODEL_RE.source,
+          gatedTools: Array.from(DEFAULT_GATED_TOOLS),
+          shellBypassPatterns: DEFAULT_SHELL_BYPASS_PATTERNS.map((re) => re.source),
+          expensiveTierModel: DEFAULT_EXPENSIVE_TIER_MODEL,
+        },
+        agentMap !== undefined ? { agentMap: agentMap } : {}
+      ),
       null,
       2
     ) + '\n';
@@ -582,6 +604,7 @@ module.exports = {
   matchGlob,
   compileGlobPattern,
   getShellBypassPatterns,
+  getAgentMap,
   CONFIG_DIRNAME,
   CONFIG_FILENAME,
   KILL_SWITCH_ENV,

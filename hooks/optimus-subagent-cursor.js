@@ -19,6 +19,7 @@ const { isKillSwitchActive, getConfig } = require(
   path.join(__dirname, 'optimus-config.js')
 );
 const { markActive, clearActive } = require(path.join(__dirname, 'optimus-sidecar.js'));
+const { recordAgentEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
 
 function done() {
   process.stdout.write(JSON.stringify({ permission: 'allow' }));
@@ -62,8 +63,36 @@ function main(raw) {
 
   if (payload.hook_event_name === 'subagentStart') {
     markActive(payload.cwd, id, payload.parent_conversation_id);
+    // Agent-map stream. `id` is the same fallback chain the marker file
+    // uses, so agent_conversation_id always matches the sidecar key.
+    // session_id is the ORCHESTRATOR's conversation (parent), never the
+    // subagent's own — one grouping field across every event type.
+    recordAgentEvent(payload.cwd, {
+      ev: 'agent_started',
+      session_id: payload.parent_conversation_id || payload.conversation_id || '',
+      agent_conversation_id: id,
+      subagent_id: payload.subagent_id || payload.tool_call_id,
+      agent_type: payload.subagent_type,
+      model: payload.model_id,
+    });
   } else if (payload.hook_event_name === 'subagentStop') {
     clearActive(payload.cwd, id);
+    // Orphan stops (observed: validation failures fire stop with no
+    // preceding start) still get a row — the extension synthesizes the
+    // node. duration_ms/status/model_id are optional: the success-path
+    // payload shape is unverified (Stage-0 fallback accepted), so absent
+    // fields are simply omitted and the reader falls back per spec §6.
+    recordAgentEvent(payload.cwd, {
+      ev: 'agent_finished',
+      session_id: payload.parent_conversation_id || payload.conversation_id || '',
+      agent_conversation_id: id,
+      subagent_id: payload.subagent_id || payload.tool_call_id,
+      status: payload.status,
+      duration_ms: payload.duration_ms,
+      agent_type: payload.subagent_type,
+      error_message: payload.error_message,
+      model: payload.model_id,
+    });
   }
   return done();
 }

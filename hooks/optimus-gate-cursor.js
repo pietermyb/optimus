@@ -46,7 +46,7 @@ const {
   getShellBypassPatterns,
 } = require(path.join(__dirname, 'optimus-config.js'));
 
-const { recordEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
+const { recordEvent, recordAgentEvent } = require(path.join(__dirname, 'optimus-ledger.js'));
 const { consumeAllowance } = require(path.join(__dirname, 'optimus-allowance.js'));
 const { isSubagentConversation } = require(path.join(__dirname, 'optimus-sidecar.js'));
 const {
@@ -270,6 +270,28 @@ function main(raw) {
       base.generation_id = payload.generation_id;
     }
     recordEvent(payload.cwd, Object.assign(base, event));
+
+    // Agent-map stream: one row per ALLOWED dispatch, alongside (never
+    // instead of) the enforcement ledger. Denials never become agents and
+    // stay solely in events.jsonl. `description` is read from the RAW
+    // payload — normalizeInput strips it before the core sees it (its
+    // output is not in scope here); `prompt` is never recorded.
+    if (event.ev === 'dispatch_allowed') {
+      const agentEvent = {
+        ev: 'agent_dispatch',
+        session_id: payload.conversation_id,
+        tool_use_id: payload.tool_use_id,
+        agent_type: event.agent_type,
+        model: event.model,
+      };
+      const rawInput = payload.tool_input;
+      const description =
+        rawInput && typeof rawInput.description === 'string' ? rawInput.description : '';
+      if (description.trim() !== '') {
+        agentEvent.title = description.length > 120 ? description.slice(0, 120) : description;
+      }
+      recordAgentEvent(payload.cwd, agentEvent);
+    }
   }
 
   if (decision.allow) return allow();
