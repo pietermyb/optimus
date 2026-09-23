@@ -389,6 +389,42 @@ t('a missing config file is not negatively cached', () => {
   assert.strictEqual(cfg.getConfig(dir).enabled, true);
 });
 
+// --- writeFileAtomicRefusingSymlink -------------------------------------
+t('writes a normal file atomically in a writable directory', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-write-'));
+  const target = path.join(dir, 'out.json');
+  cfg.writeFileAtomicRefusingSymlink(target, 'hello');
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), 'hello');
+  // no leftover tmp file
+  assert.deepStrictEqual(fs.readdirSync(dir), ['out.json']);
+});
+t('refuses to write through a pre-existing symlink at the target', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-write-'));
+  const real = path.join(dir, 'real.json');
+  const link = path.join(dir, 'link.json');
+  fs.writeFileSync(real, 'original');
+  fs.symlinkSync(real, link);
+  assert.throws(
+    () => cfg.writeFileAtomicRefusingSymlink(link, 'new'),
+    /refusing to write through a symlink/
+  );
+  assert.strictEqual(fs.readFileSync(real, 'utf8'), 'original'); // untouched
+});
+t('a permission-denied directory raises a clear Optimus error, not a raw EPERM/EACCES', () => {
+  if (process.getuid && process.getuid() === 0) return; // root bypasses dir perms; skip
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'optimus-write-'));
+  const target = path.join(dir, 'out.json');
+  fs.chmodSync(dir, 0o500); // read+execute only, no write
+  try {
+    assert.throws(
+      () => cfg.writeFileAtomicRefusingSymlink(target, 'new'),
+      (e) => e instanceof Error && /Optimus: cannot write to/.test(e.message) && /not writable/.test(e.message)
+    );
+  } finally {
+    fs.chmodSync(dir, 0o700); // restore so the test runner can clean up
+  }
+});
+
 console.log('');
 console.log('== ' + pass + ' passed, ' + fail + ' failed ==');
 process.exit(fail === 0 ? 0 : 1);

@@ -492,8 +492,28 @@ function writeFileAtomicRefusingSymlink(target, contents, mode) {
     Date.now() +
     '-' +
     Math.random().toString(36).slice(2, 8);
-  fs.writeFileSync(tmp, contents, { mode: typeof mode === 'number' ? mode : 0o600, flag: 'wx' });
-  fs.renameSync(tmp, target);
+  try {
+    fs.writeFileSync(tmp, contents, { mode: typeof mode === 'number' ? mode : 0o600, flag: 'wx' });
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    // EPERM/EACCES/EROFS here mean the OS itself refused the write (bad
+    // permissions, an immutable/uchg flag, a restrictive ACL, a read-only
+    // mount, or -- on macOS -- a Privacy & Security "Files and Folders"
+    // denial for the calling app). None of those are the symlink case
+    // above, which already threw its own explicit error; this is a plain
+    // "the directory isn't writable" failure that otherwise surfaces as a
+    // bare EPERM with a raw fs.openSync stack trace and no indication of
+    // what to actually do about it.
+    if (e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EROFS') {
+      throw new Error(
+        'Optimus: cannot write to ' + path.dirname(target) + ' (' + e.code + ') -- ' +
+        'the directory is not writable. Check its permissions, ACLs, and macOS ' +
+        'immutable/uchg flags, and (on macOS) that this app has Files and Folders ' +
+        'access to that location in Privacy & Security settings.'
+      );
+    }
+    throw e;
+  }
 }
 
 /**

@@ -42,6 +42,26 @@ Section 5 and open decision (a).
    which answers the Unknown-1 question identically.
 8. `node bin/optimus-probe-report <scratch>/.cursor/probe/probe.log`
 
+## Agent-map Stage 0 — P1, P2, P3
+
+Answers the three questions `docs/spec/optimus-visualiser-spec.md` §7 gates
+the `agents.jsonl` stream on. Same scratch-project setup as Unknown 1
+(steps 1–5 above); `hooks.probe.json` already registers `sessionStart`
+alongside the subagent events.
+
+1. **P1 — success-path `subagentStop`.** After registration is confirmed,
+   dispatch a built-in subagent (e.g. `explore`) that completes normally.
+   Capture the full `subagentStop` payload and record whether it carries
+   `duration_ms`, `status`, and `model_id` — Additional finding 2 only ever
+   observed the **error/orphan** path.
+2. **P2 — `sessionStart` payload.** Open a new conversation in the scratch
+   project (fires `sessionStart` before any tool call). Record the payload's
+   field set verbatim: is `conversation_id` present? `session_id`? `model` /
+   `model_id`? This decides the `session_started` event's id and model label.
+3. **P3 — `description` quality.** Over a handful of organic (non-probe)
+   `Task` dispatches, note whether `tool_input.description` is present,
+   single-line, and non-empty. Probe-crafted Tasks don't count.
+
 ## Unknown 2 — plugin root
 
 Run these as two separate passes (Cursor's cardinality rules for multiple

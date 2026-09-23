@@ -9,6 +9,9 @@
     ],
     "subagentStop": [
       { "command": "node \".cursor/probe/probe.js\"" }
+    ],
+    "sessionStart": [
+      { "command": "node \".cursor/probe/probe.js\"" }
     ]
   }
 }
