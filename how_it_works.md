@@ -104,7 +104,10 @@ Two limits worth knowing:
 
 Cursor reads Claude Code plugin manifests. With no `.cursor/hooks.json` at all, it finds Optimus's
 `hooks/hooks.json`, maps `PreToolUse` onto its own `preToolUse`, resolves `${CLAUDE_PLUGIN_ROOT}`,
-and runs `hooks/optimus-gate.js` on every matched tool call.
+and runs `hooks/optimus-gate.js` on every matched tool call. The Claude-only lifecycle entries
+(`PostToolUse`/`PostToolUseFailure`/`SessionStart`) are either unmapped or no-op on Cursor payloads
+— `optimus-agent-claude.js` exits before any write unless the payload carries Claude's
+`tool_use_id` + `session_id` pair, which Cursor sends as `tool_call_id`/`conversation_id`.
 
 **That hook is a silent no-op on Cursor, and its deny path fails open.** Its allow path is Claude
 Code's "emit nothing", which Cursor also reads as allow, so allows happen to work. But a deny emits
@@ -222,6 +225,8 @@ Optimus/
 │   ├── optimus-gate-cursor.js    # Cursor preToolUse adapter (thin — parses/emits Cursor shapes)
 │   ├── optimus-session-cursor.js # Cursor sessionStart: one-shot policy injection
 │   ├── optimus-subagent-cursor.js # Cursor subagentStart/Stop: maintains the attribution sidecar
+│   ├── optimus-session-claude.js # Claude Code SessionStart: session_started root row + marker sweep
+│   ├── optimus-agent-claude.js # Claude Code PostToolUse(Failure): agent_finished row (CP1/CP2)
 │   ├── optimus-sidecar.js   # shared-by-Cursor: which conversation dispatched each live subagent
 │   ├── optimus-reinforce.js # Claude Code UserPromptSubmit: per-turn reminder (decays otherwise)
 │   ├── optimus-config.js    # shared: repo-local config resolution, kill switch, safe atomic writes
@@ -369,7 +374,7 @@ A few properties of this file are load-bearing, not incidental:
 Alongside the enforcement ledger, the same writers append agent *lifecycle*
 rows — observational, not enforcement — to
 `<project root>/.optimus/state/agents.jsonl`. This is the data source for
-the future **Optimus-Visualiser** Cursor extension (design contract:
+the **Optimus-Visualiser** VS Code/Cursor extension (design contract:
 `docs/spec/optimus-visualiser-spec.md`), which folds the stream into an
 "Agent map" panel: the orchestrator as root, one card per subagent with
 title, status and duration. It deliberately lives in a **separate file**
@@ -377,14 +382,16 @@ from `events.jsonl` so the two never share a rotation budget or blur each
 other's meaning; `/optimus-stats` does not read it and gains no output
 from it.
 
-Four events, written by the hooks that already fire on these transitions:
+Four events, written by the hooks that already fire on these transitions
+on both hosts (Claude Code payload shapes verified by probes CP1–CP3 —
+`docs/claude-probe-findings.md`):
 
 | `ev` | Writer | When |
 |---|---|---|
-| `session_started` | `optimus-session-cursor.js` | Cursor `sessionStart` (orchestrator root; `model` only if the payload carries one) |
+| `session_started` | `optimus-session-cursor.js` / `optimus-session-claude.js` | Cursor `sessionStart` / Claude `SessionStart` (orchestrator root; `model` only if the payload carries one — Claude's CP3 payload does not) |
 | `agent_dispatch` | both gate adapters | only on `dispatch_allowed` — denied dispatches never become agents and stay solely in the enforcement ledger. `title` is `tool_input.description`, truncated to 120 chars; `prompt` is **never** recorded |
-| `agent_started` | `optimus-subagent-cursor.js` | `subagentStart`, after the sidecar marker is written |
-| `agent_finished` | `optimus-subagent-cursor.js` | `subagentStop`, after the marker is cleared — including orphan stops with no preceding start (observed: validation failures) |
+| `agent_started` | `optimus-subagent-cursor.js`; Claude: `optimus-gate.js` | Cursor `subagentStart`, after the sidecar marker is written. Claude has no `subagentStart` hook — the gate's allow writes it immediately after `agent_dispatch` (`subagent_id` = `tool_use_id`; `agent_conversation_id` and `model` are only learnable at completion, so both are absent here). No sidecar marker on Claude: a Claude-written marker would poison Cursor's `parentConversations()` attribution on a project used from both hosts |
+| `agent_finished` | `optimus-subagent-cursor.js`; Claude: `optimus-agent-claude.js` | Cursor `subagentStop`, after the marker is cleared — including orphan stops with no preceding start. Claude `PostToolUse` (success: `status`, `duration_ms`, `agent_conversation_id` from `tool_response.agentId`, `model` from `tool_response.resolvedModel`) and `PostToolUseFailure` (error row: `status: "error"`, `error_message`, `duration_ms`) — a validation failure that never ran a subagent still closes its dispatch/started rows (CP2) |
 
 Every line carries `session_id` = the **orchestrator's** conversation id
 (fallback: the subagent's own id on a parentless stop) plus

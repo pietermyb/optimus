@@ -218,6 +218,21 @@ function main(raw) {
         agentEvent.title = description.length > 120 ? description.slice(0, 120) : description;
       }
       recordAgentEvent(payload.cwd, agentEvent);
+
+      // Agent-map stream: allow-as-start. Claude Code has no subagentStart
+      // hook (probe CP1-CP3, docs/claude-probe-findings.md), so this allow
+      // IS the observable start. subagent_id = tool_use_id — the same join
+      // key the Cursor subagentStart row uses — so dispatch and start merge
+      // in the fold. agent_conversation_id and model are only learnable at
+      // completion (PostToolUse tool_response) and are deliberately absent
+      // here; no sidecar marker either (a Claude-written marker would poison
+      // Cursor's parentConversations() attribution on a shared project).
+      recordAgentEvent(payload.cwd, {
+        ev: 'agent_started',
+        session_id: payload.session_id,
+        subagent_id: payload.tool_use_id,
+        agent_type: event.agent_type,
+      });
     }
   }
 

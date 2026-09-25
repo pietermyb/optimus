@@ -90,6 +90,20 @@ check "active: Agent model=haiku ALLOWED"         allow agent-haiku-model.json "
 check "active: Bash git status ALLOWED"           allow main-bash-git.json   "$PROJECT"
 check "active: Bash cat work.txt DENIED (best-effort)" deny main-bash-cat.json "$PROJECT"
 
+# Regression: a payload with no cwd (Cursor running the Claude Code plugin
+# hooks) must never fall back to the hook process's own cwd. The plugin
+# install dir can carry an enabled .optimus/config.json, which used to switch
+# Optimus on in every Cursor project.
+no_cwd_read='{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"x"}}'
+no_cwd_out="$(cd "$PROJECT" && node "$GATE" <<<"$no_cwd_read")"
+if echo "$no_cwd_out" | grep -q '"permissionDecision":"deny"'; then
+  echo "FAIL: no cwd in payload: Read ALLOWED even from an enabled process cwd -- output: $no_cwd_out"
+  fail=$((fail+1))
+else
+  echo "PASS: no cwd in payload: Read ALLOWED even from an enabled process cwd"
+  pass=$((pass+1))
+fi
+
 echo ""
 echo "-- configurable policy: per-project override changes outcomes --"
 CUSTOM="$WORKDIR/project-custom"

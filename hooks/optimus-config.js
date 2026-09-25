@@ -411,7 +411,10 @@ function safeReadJsonFile(filePath) {
  * within MAX_WALK_LEVELS (or before hitting the filesystem root).
  */
 function findProjectRoot(startDir) {
-  let dir = path.resolve(startDir || process.cwd());
+  // No process.cwd() fallback: hooks run from the plugin install dir, which
+  // can carry its own enabled .optimus/config.json. No cwd means "not enabled".
+  if (typeof startDir !== 'string' || startDir.trim() === '') return null;
+  let dir = path.resolve(startDir);
   for (let i = 0; i < MAX_WALK_LEVELS; i++) {
     const candidate = path.join(dir, CONFIG_DIRNAME, CONFIG_FILENAME);
     try {
