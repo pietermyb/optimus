@@ -1,0 +1,19 @@
+{
+  "session_id": "test-session",
+  "transcript_path": "/tmp/does-not-exist.jsonl",
+  "cwd": "__PROJECT__",
+  "prompt_id": "probe-prompt-2",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "Probe agent type",
+    "prompt": "hi",
+    "subagent_type": "nonexistent-agent-type-xyz",
+    "run_in_background": false
+  },
+  "tool_use_id": "toolu_cp2_fail",
+  "error": "Agent type 'nonexistent-agent-type-xyz' not found.",
+  "is_interrupt": false,
+  "duration_ms": 1
+}

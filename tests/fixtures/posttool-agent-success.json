@@ -1,0 +1,25 @@
+{
+  "session_id": "test-session",
+  "transcript_path": "/tmp/does-not-exist.jsonl",
+  "cwd": "__PROJECT__",
+  "prompt_id": "probe-prompt-1",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "Investigate findings",
+    "prompt": "Look into OPTIMUS_SENTINEL_9f3a1b and report back",
+    "subagent_type": "general-purpose",
+    "run_in_background": false
+  },
+  "tool_response": {
+    "status": "completed",
+    "agentId": "agent-conv-cp1",
+    "agentType": "general-purpose",
+    "resolvedModel": "claude-haiku-4-5",
+    "totalDurationMs": 2469,
+    "totalTokens": 22750
+  },
+  "tool_use_id": "toolu_ledger_allowed",
+  "duration_ms": 2469
+}

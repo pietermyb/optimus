@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Tests for the Agent-map stream (hooks/optimus-ledger.js recordAgentEvent
-# and its four hook callers). Mirrors tests/run-ledger-tests.sh conventions:
+# and its hook callers — both hosts: the Claude gate allow-as-start +
+# optimus-agent-claude.js / optimus-session-claude.js, and the Cursor
+# subagent/session hooks). Mirrors tests/run-ledger-tests.sh conventions:
 # throwaway project dirs under a temp directory, activated via optimus-cli,
 # fixture payloads fed to the hooks on stdin, assertions against
 # <project>/.optimus/state/agents.jsonl. The enforcement ledger keeps its
@@ -14,6 +16,8 @@ GATE="$ROOT/hooks/optimus-gate.js"
 GATE_CURSOR="$ROOT/hooks/optimus-gate-cursor.js"
 SUBHOOK="$ROOT/hooks/optimus-subagent-cursor.js"
 SESSIONHOOK="$ROOT/hooks/optimus-session-cursor.js"
+AGENTHOOK="$ROOT/hooks/optimus-agent-claude.js"
+SESSIONHOOK_CLAUDE="$ROOT/hooks/optimus-session-claude.js"
 LEDGER="$ROOT/hooks/optimus-ledger.js"
 CLI="$ROOT/bin/optimus-cli"
 
@@ -60,6 +64,14 @@ feed_cursor() {
 last_line() {
   if [ -f "$1" ]; then
     tail -n 1 "$1"
+  else
+    echo ""
+  fi
+}
+
+first_line() {
+  if [ -f "$1" ]; then
+    head -n 1 "$1"
   else
     echo ""
   fi
@@ -128,10 +140,10 @@ assert_field "agent_started: model"        "$line" model                 "gpt-5"
 if [ -n "$(field "$line" ts)" ]; then ok "agent_started: ts present"; else bad "agent_started: ts missing (got: $line)"; fi
 
 echo ""
-echo "-- case 2: enforcement gate — allow writes agent_dispatch, deny writes nothing --"
+echo "-- case 2: enforcement gate — allow writes dispatch + allow-as-start, deny writes nothing --"
 rm -f "$AGENTLOG"
 feed "$GATE" "$FIXTURES/ledger-agent-allowed.json" "$PROJECT" >/dev/null
-line="$(last_line "$AGENTLOG")"
+line="$(first_line "$AGENTLOG")"
 assert_field "claude allow: ev"            "$line" ev          "agent_dispatch"
 assert_field "claude allow: session_id"    "$line" session_id  "test-session"
 assert_field "claude allow: tool_use_id"   "$line" tool_use_id "toolu_ledger_allowed"
@@ -139,6 +151,15 @@ assert_field "claude allow: model"         "$line" model       "haiku"
 assert_field "claude allow: agent_type"    "$line" agent_type  "general-purpose"
 assert_field "claude allow: title from description" "$line" title "Investigate findings"
 assert_no_field "claude allow: prompt not recorded"  "$line" prompt
+# Allow-as-start: a second row closes the dispatch, joining on tool_use_id.
+line="$(last_line "$AGENTLOG")"
+assert_field "claude allow: started ev"         "$line" ev           "agent_started"
+assert_field "claude allow: started session"    "$line" session_id   "test-session"
+assert_field "claude allow: started joins dispatch" "$line" subagent_id "toolu_ledger_allowed"
+assert_field "claude allow: started agent_type" "$line" agent_type   "general-purpose"
+assert_no_field "claude allow: started has no model yet" "$line" model
+assert_no_field "claude allow: started has no conversation id yet" "$line" agent_conversation_id
+assert_no_field "claude allow: started prompt not recorded" "$line" prompt
 
 # Deny on a FRESH project: zero agent lines, enforcement ledger untouched.
 DENYPROJECT="$WORKDIR/deny-project"
@@ -395,12 +416,106 @@ echo "-- case 12: privacy — prompt text never reaches agents.jsonl; title is d
 PRIV_PAYLOAD='{"session_id":"priv-sess","cwd":"'"$PROJECT"'","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"description":"safe title","prompt":"leaky '"$SENTINEL"' body","subagent_type":"general-purpose","model":"haiku"},"tool_use_id":"toolu_priv"}'
 rm -f "$AGENTLOG"
 printf '%s' "$PRIV_PAYLOAD" | node "$GATE" >/dev/null
-line="$(last_line "$AGENTLOG")"
+line="$(first_line "$AGENTLOG")"
 assert_field "privacy: title is the description" "$line" title "safe title"
 if grep -q "$SENTINEL" "$AGENTLOG" 2>/dev/null; then
   bad "privacy: prompt sentinel leaked into agents.jsonl"
 else
   ok "privacy: prompt sentinel absent from agents.jsonl"
+fi
+
+echo ""
+echo "-- case 13: Claude PostToolUse — agent_finished closes the gate's start (CP1 shape) --"
+rm -f "$AGENTLOG"
+feed "$GATE" "$FIXTURES/ledger-agent-allowed.json" "$PROJECT" >/dev/null
+sout="$(feed "$AGENTHOOK" "$FIXTURES/posttool-agent-success.json" "$PROJECT")"
+if [ "$sout" = "{}" ]; then
+  ok "cp1 finish: hook emits {} on stdout"
+else
+  bad "cp1 finish: hook stdout should be {} (got: $sout)"
+fi
+line="$(last_line "$AGENTLOG")"
+assert_field "cp1 finish: ev"                 "$line" ev                    "agent_finished"
+assert_field "cp1 finish: session_id"         "$line" session_id            "test-session"
+assert_field "cp1 finish: joins on tool_use_id" "$line" subagent_id         "toolu_ledger_allowed"
+assert_field "cp1 finish: status"             "$line" status                "completed"
+assert_field "cp1 finish: agent_conversation_id from agentId" "$line" agent_conversation_id "agent-conv-cp1"
+assert_field "cp1 finish: model from resolvedModel" "$line" model           "claude-haiku-4-5"
+assert_field "cp1 finish: agent_type"         "$line" agent_type            "general-purpose"
+assert_field "cp1 finish: duration_ms"        "$line" duration_ms           "2469"
+assert_no_field "cp1 finish: prompt not recorded" "$line" prompt
+if grep -q "$SENTINEL" "$AGENTLOG" 2>/dev/null; then
+  bad "cp1 finish: prompt sentinel leaked into agents.jsonl"
+else
+  ok "cp1 finish: prompt sentinel absent from agents.jsonl"
+fi
+# Three-row lifecycle: dispatch → started → finished, same join key.
+if [ "$(wc -l <"$AGENTLOG" | tr -d ' ')" = "3" ]; then
+  ok "cp1 finish: exactly 3 lifecycle rows (dispatch, started, finished)"
+else
+  bad "cp1 finish: expected 3 rows, got $(wc -l <"$AGENTLOG")"
+fi
+
+echo ""
+echo "-- case 14: Claude PostToolUseFailure — error row (CP2 shape, orphan) --"
+rm -f "$AGENTLOG"
+sout="$(feed "$AGENTHOOK" "$FIXTURES/posttool-agent-failure.json" "$PROJECT")"
+if [ "$sout" = "{}" ]; then
+  ok "cp2 finish: hook emits {} on stdout"
+else
+  bad "cp2 finish: hook stdout should be {} (got: $sout)"
+fi
+line="$(last_line "$AGENTLOG")"
+assert_field "cp2 finish: ev"                 "$line" ev                    "agent_finished"
+assert_field "cp2 finish: session_id"         "$line" session_id            "test-session"
+assert_field "cp2 finish: subagent_id"        "$line" subagent_id           "toolu_cp2_fail"
+assert_field "cp2 finish: status error"       "$line" status                "error"
+assert_field "cp2 finish: error_message"      "$line" error_message         "Agent type 'nonexistent-agent-type-xyz' not found."
+assert_field "cp2 finish: duration_ms"        "$line" duration_ms           "1"
+assert_field "cp2 finish: agent_type from tool_input" "$line" agent_type    "nonexistent-agent-type-xyz"
+assert_no_field "cp2 finish: no conversation id on failure" "$line" agent_conversation_id
+
+echo ""
+echo "-- case 15: Claude SessionStart — session_started root, no model (CP3 shape) --"
+rm -f "$AGENTLOG"
+sout="$(feed "$SESSIONHOOK_CLAUDE" "$FIXTURES/session-start-claude.json" "$PROJECT")"
+if [ "$sout" = "{}" ]; then
+  ok "cp3 session: hook emits {} on stdout"
+else
+  bad "cp3 session: hook stdout should be {} (got: $sout)"
+fi
+line="$(last_line "$AGENTLOG")"
+assert_field "cp3 session: ev"       "$line" ev         "session_started"
+assert_field "cp3 session: session_id" "$line" session_id "sess-claude-root"
+assert_no_field "cp3 session: no model on Claude payload" "$line" model
+
+echo ""
+echo "-- case 16: Claude finish/session hooks honour kill switch and deactivation --"
+GUARD2="$WORKDIR/guard2-project"
+mkdir -p "$GUARD2"
+CLAUDE_PROJECT_DIR="$GUARD2" node "$CLI" on >/dev/null
+rm -f "$GUARD2/.optimus/state/agents.jsonl"
+feed "$AGENTHOOK" "$FIXTURES/posttool-agent-success.json" "$GUARD2" "OPTIMUS_DISABLED=1" >/dev/null
+if [ ! -e "$GUARD2/.optimus/state/agents.jsonl" ]; then
+  ok "kill switch: finish hook writes nothing"
+else
+  bad "kill switch: finish hook wrote agents.jsonl"
+fi
+feed "$SESSIONHOOK_CLAUDE" "$FIXTURES/session-start-claude.json" "$GUARD2" "OPTIMUS_DISABLED=1" >/dev/null
+if [ ! -e "$GUARD2/.optimus/state/agents.jsonl" ]; then
+  ok "kill switch: Claude session hook writes nothing"
+else
+  bad "kill switch: Claude session hook wrote agents.jsonl"
+fi
+OFF2="$WORKDIR/off2-project"
+mkdir -p "$OFF2"
+CLAUDE_PROJECT_DIR="$OFF2" node "$CLI" off >/dev/null
+feed "$AGENTHOOK" "$FIXTURES/posttool-agent-success.json" "$OFF2" >/dev/null
+feed "$SESSIONHOOK_CLAUDE" "$FIXTURES/session-start-claude.json" "$OFF2" >/dev/null
+if [ ! -e "$OFF2/.optimus/state/agents.jsonl" ]; then
+  ok "deactivated project: Claude finish/session hooks write nothing"
+else
+  bad "deactivated project: Claude hooks wrote agents.jsonl"
 fi
 
 echo ""

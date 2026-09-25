@@ -1,0 +1,7 @@
+{
+  "session_id": "sess-claude-root",
+  "transcript_path": "/tmp/does-not-exist.jsonl",
+  "cwd": "__PROJECT__",
+  "hook_event_name": "SessionStart",
+  "source": "startup"
+}
